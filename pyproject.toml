@@ -1,0 +1,21 @@
+[project]
+name = "qec_sim"
+version = "0.1.0"
+requires-python = ">=3.10"
+description = "Quantum Error Correction Simulator with Correlated & Leakage Noise"
+dependencies = [
+    "graphviz>=0.21",
+    "intel-extension-for-pytorch>=2.8.0",
+    "jupyter>=1.1.1",
+    "numpy>=2.2.6",
+    "pandas>=2.3.3",
+    "pymatching>=2.3.1",
+    "stim>=1.15.0",
+    "torch>=2.9.0",
+    "torchviz>=0.0.3",
+    "tqdm>=4.67.1",
+    "stim"
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
