@@ -1,0 +1,19 @@
+# 시뮬레이션 및 데이터 생성 설정
+simulation:
+  shots: 1000
+
+# 양자 코드 설정
+code:
+  distance: 5
+  rounds: 5
+
+# 노이즈 모델 설정
+noise:
+  p_gate: 0.005
+  p_meas: 0.005
+  p_corr: 0.001
+  p_leak: 0.03
+
+# 디코더 설정 (여기서 이름표만 바꾸면 디코더가 바뀝니다!)
+decoder:
+  name: "mwpm"  # registry에 등록한 이름

@@ -14,7 +14,8 @@ dependencies = [
     "torch>=2.9.0",
     "torchviz>=0.0.3",
     "tqdm>=4.67.1",
-    "stim"
+    "notebook>=7.5.3",
+    "sinter>=1.15.0",
 ]
 
 [tool.setuptools.packages.find]

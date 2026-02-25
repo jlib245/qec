@@ -1,0 +1,37 @@
+# 양자 코드 및 노이즈 설정
+code:
+  distance: 5
+  rounds: 5
+
+noise:
+  p_gate: 0.005
+  p_meas: 0.005
+  p_corr: 0.001
+  p_leak: 0.03
+
+simulation:
+  shots: 1000  # run_experiment.py 평가 시 사용할 샷 수
+
+# [학습 설정]
+training:
+  data_mode: "offline" # "offline" (npz 로드) 또는 "online" (실시간 생성)
+  train_path: "datasets/d5_complex_noise/train.npz"
+  val_path: "datasets/d5_complex_noise/val.npz"
+  batch_size: 512
+  epochs: 20
+  learning_rate: 0.001
+  save_path: "checkpoints/mlp_weights.pth" # 학습 완료 후 저장될 경로
+
+# [모델 설정]
+model:
+  name: "erasure_mlp"
+  kwargs:
+    hidden_dim: 512
+
+# 평가(run_experiment.py)에서 사용할 디코더 설정
+decoder:
+  name: "neural_decoder"
+  model_name: "erasure_mlp"
+  model_kwargs:
+    hidden_dim: 512
+  weight_path: "checkpoints/mlp_weights.pth" # 위에서 저장한 경로와 똑같이 맞춰줍니다.

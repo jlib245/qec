@@ -1,9 +1,15 @@
+# qec_sim/decoders/mwpm.py
+
 import pymatching
 import stim
 import numpy as np
 
-class ErasureMWPM:
-    def __init__(self, error_model: stim.DetectorErrorModel):
+from .base import BaseDecoder
+from .registry import register_decoder
+
+@register_decoder("mwpm")
+class ErasureMWPM(BaseDecoder):
+    def __init__(self, error_model: stim.DetectorErrorModel, **kwargs):
         self.error_model = error_model
         # 기본 매칭 그래프 생성
         self.base_matching = pymatching.Matching.from_detector_error_model(error_model)
@@ -18,6 +24,7 @@ class ErasureMWPM:
         for i in range(num_shots):
             syndrome = syndromes[i]
             
+            # [주의] if와 else 구조가 하나로 연결되어야 모든 경우에 prediction이 할당됩니다!
             if erasures is not None and np.any(erasures[i]):
                 temp_matching = pymatching.Matching.from_detector_error_model(self.error_model)
                 erased_detectors = np.where(erasures[i])[0]
@@ -31,12 +38,13 @@ class ErasureMWPM:
                         merge_strategy="replace"
                     )
                 
-                # [핵심] 수정한 그래프로 디코딩을 수행하여 prediction에 저장합니다.
+                # 누설이 있을 때의 예측값 할당
                 prediction = temp_matching.decode(syndrome)
             else:
-                # 누설 정보가 없거나 누설이 발생하지 않은 경우 기본 디코딩
+                # 누설 정보가 없거나, 해당 샷에서 누설이 없을 때의 예측값 할당
                 prediction = self.base_matching.decode(syndrome)
                 
+            # 위 if-else를 무조건 거치므로 prediction은 항상 존재합니다.
             predictions.append(prediction)
 
         return np.array(predictions)
