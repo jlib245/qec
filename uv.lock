@@ -2536,7 +2536,7 @@ wheels = [
 [[package]]
 name = "qec-sim"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "graphviz" },
     { name = "intel-extension-for-pytorch" },
