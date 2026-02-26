@@ -3,10 +3,14 @@
 ## 실행 예시
 
 ### NN디코더 학습
+```sh
 uv run python tests/baseline/train.py --config configs/experiment_mlp.yaml
+```
 
 ### 디코더 성능 평가
+```sh
 uv run python tests/baseline/run_experiment.py --config configs/experiment_mwpm.yaml
+```
 
 ## 확장 가이드
 ### NN 디코더 추가
