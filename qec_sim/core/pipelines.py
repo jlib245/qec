@@ -3,6 +3,10 @@
 import yaml
 import torch
 import torch.optim as optim
+import torch.optim.lr_scheduler as lr_scheduler
+import os
+import shutil
+import datetime
 
 # 필요한 모듈 임포트
 from qec_sim.data import QECDataModule
@@ -17,6 +21,7 @@ from qec_sim.decoders import build_decoder
 class TrainingPipeline:
     """YAML 설정 파일을 읽어 처음부터 끝까지 모델 학습을 진행하는 파이프라인"""
     def __init__(self, config_path: str):
+        self.config_path = config_path # 원본 설정 파일 경로 저장
         with open(config_path, 'r') as f:
             self.config = yaml.safe_load(f)
             
@@ -26,6 +31,18 @@ class TrainingPipeline:
         print(f"[{config_path}] 학습 파이프라인 초기화 완료 (디바이스: {self.device})")
 
     def run(self):
+        # 0. 실험 결과 및 설정값 백업 (자동 타임스탬프 폴더 생성)
+        base_output_dir = self.train_config.get('output_dir', 'results/default_run')
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_dir = f"{base_output_dir}_{timestamp}"
+        
+        os.makedirs(output_dir, exist_ok=True)
+        backup_config_path = os.path.join(output_dir, "config.yaml")
+        shutil.copy(self.config_path, backup_config_path)
+        
+        print(f"📁 실험 결과 폴더 : {output_dir}")
+        print(f"📝 설정값 백업 : {backup_config_path}")
+
         # 1. 데이터 준비
         datamodule = QECDataModule(self.config)
         train_loader, val_loader = datamodule.get_loaders()
@@ -38,12 +55,56 @@ class TrainingPipeline:
             num_observables=datamodule.num_observables, 
             **model_config.get('kwargs', {})
         ).to(self.device)
-        optimizer = optim.Adam(model.parameters(), lr=self.train_config.get('learning_rate', 0.001))
         
-        # 3. 학습 엔진 구동
-        trainer = QECTrainer(model, train_loader, val_loader, optimizer, self.device)
+        optim_config = self.train_config.get('optimizer', {})
+        optim_name = optim_config.get('name', 'Adam') # 기본값 Adam
+        optim_kwargs = optim_config.get('kwargs', {'lr': 0.001})
+
+        try:
+            OptimizerClass = getattr(optim, optim_name)
+            optimizer = OptimizerClass(model.parameters(), **optim_kwargs)
+            print(f"[{optim_name}] 옵티마이저가 성공적으로 로드되었습니다. (설정: {optim_kwargs})")
+        except AttributeError:
+            raise ValueError(f"지원하지 않는 옵티마이저입니다: {optim_name}")
+        
+        # 3. 스케줄러 설정
+        sched_config = self.train_config.get('scheduler', {})
+        scheduler = None
+        if sched_config:
+            sched_name = sched_config.get('name')
+            sched_kwargs = sched_config.get('kwargs', {})
+            try:
+                SchedulerClass = getattr(lr_scheduler, sched_name)
+                scheduler = SchedulerClass(optimizer, **sched_kwargs)
+                print(f"[{sched_name}] 스케줄러가 로드되었습니다.")
+            except AttributeError:
+                raise ValueError(f"지원하지 않는 스케줄러입니다: {sched_name}")
+
+        # 4. Early Stopping 설정
+        es_config = self.train_config.get('early_stopping', {})
+        es_patience = es_config.get('patience', 0) # 0이면 사용 안 함
+
+        # ---------------------------------------------------------
+        # 5. 로그 및 모델 저장 경로 설정 
+        log_path_csv = os.path.join(output_dir, "training_log.csv")
+        save_path_pth = os.path.join(output_dir, "best_model.pth")
+        # ---------------------------------------------------------
+
+        # 6. 학습 엔진 구동 (생성된 경로 주입)
+        trainer = QECTrainer(
+            model=model, 
+            train_loader=train_loader, 
+            val_loader=val_loader, 
+            optimizer=optimizer, 
+            device=self.device, 
+            scheduler=scheduler, 
+            early_stopping_patience=es_patience,
+            log_path=log_path_csv  
+        )
+        
         trainer.fit(epochs=self.train_config.get('epochs', 20))
-        trainer.save_model(save_path=self.train_config.get('save_path', 'model_weights.pth'))
+        
+        trainer.save_model(save_path=save_path_pth) 
 
 
 class EvaluationPipeline:
