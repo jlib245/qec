@@ -44,6 +44,10 @@ class OnlineQECDataset(IterableDataset):
         self.epoch_size = epoch_size
         self.chunk_size = chunk_size
 
+    def __len__(self):
+        # DataLoader가 epoch_size를 알 수 있도록 합니다. 실제로는 무한 생성이지만, 1 epoch당 생성할 데이터 개수를 제한합니다.
+        return self.epoch_size
+    
     def __iter__(self):
         # 멀티프로세싱 충돌을 막기 위해 시뮬레이터는 __iter__ 안에서 초기화합니다.
         from qec_sim.core.builder import CustomCircuitBuilder

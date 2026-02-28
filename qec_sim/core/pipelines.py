@@ -46,14 +46,32 @@ class TrainingPipeline:
         # 1. 데이터 준비
         datamodule = QECDataModule(self.config)
         train_loader, val_loader = datamodule.get_loaders()
-        
+        # datamodule 안에 있는 circuit에서 좌표를 추출하여 모델에 전달 (모델이 좌표를 필요로 하는 경우)
+        # datamodule 구조에 따라 .circuit 접근 방식 확인 필요
+        try:
+            # YAML 설정값을 바탕으로 임시 회로를 생성 -> 디텍터 좌표.
+            code_config = CodeParams(**self.config.get('code', {}))
+            noise_config = NoiseParams(**self.config.get('noise', {}))
+            temp_circuit = CustomCircuitBuilder(code_config, noise_config).build()
+            
+            detector_coords = temp_circuit.get_detector_coordinates()
+        except Exception as e:
+            print(f"경고: 좌표계를 생성할 수 없습니다. ({e})")
+            detector_coords = None
+            
+        code_distance = self.config.get('code', {}).get('distance', 5)
+
         # 2. 모델 및 옵티마이저 준비
         model_config = self.config.get('model', {})
+        yaml_kwargs = model_config.get('kwargs', {})
+        
         model = build_model(
             model_config.get('name', 'erasure_mlp'), 
             num_detectors=datamodule.num_detectors, 
-            num_observables=datamodule.num_observables, 
-            **model_config.get('kwargs', {})
+            num_observables=datamodule.num_observables,
+            detector_coords=detector_coords,  
+            code_distance=code_distance,      
+            **yaml_kwargs                     # yaml에 명시된 설정값 (우선순위 높음)
         ).to(self.device)
         
         optim_config = self.train_config.get('optimizer', {})

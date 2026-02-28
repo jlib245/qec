@@ -1,0 +1,39 @@
+# configs/experiment_jung_cnn.yaml
+code:
+  distance: 5
+  rounds: 5
+
+noise:
+  p_gate: 0.01
+  p_meas: 0.005
+  p_corr: 0.001
+  p_leak: 0.001
+
+training:
+  data_mode: "online" # stim을 통해 실시간 생성
+  epoch_size: 200000  # <--- 1에포크당 20만 샷 생성
+  val_size: 20000     # <--- 검증용으로는 2만 샷 생성
+  batch_size: 256
+  epochs: 50          
+  output_dir: "results/jung_cnn_low_experiment"
+  
+  optimizer:
+    name: "AdamW"
+    kwargs:
+      lr: 0.001
+      weight_decay: 0.01
+      
+  scheduler:
+    name: "ReduceLROnPlateau"
+    kwargs:
+      mode: "min"
+      factor: 0.5
+      patience: 3
+
+  early_stopping:
+    patience: 10  
+
+# 모델 이름 변경
+model:
+  name: "jung_cnn_low"
+  # kwargs는 비워두거나 추가할 하이퍼파라미터가 있다면 여기에 적습니다.

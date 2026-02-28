@@ -20,6 +20,7 @@ dependencies = [
     "tqdm>=4.67.1",
     "notebook>=7.5.3",
     "sinter>=1.15.0",
+    "dotenv>=0.9.9",
 ]
 
 [tool.setuptools.packages.find]
