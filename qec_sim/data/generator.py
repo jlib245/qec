@@ -1,60 +1,57 @@
+import os
 import numpy as np
-from pathlib import Path
-import time
+import random
 from qec_sim.core.parameters import CodeParams, NoiseParams
 from qec_sim.core.builder import CustomCircuitBuilder
 from qec_sim.core.simulator import ComplexNoiseSimulator
 
 class DatasetGenerator:
-    def __init__(self, code_config: CodeParams, noise_config: NoiseParams):
-        self.code_config = code_config
-        self.noise_config = noise_config
-        
-        # 회로와 시뮬레이터 초기화
-        builder = CustomCircuitBuilder(code_config, noise_config)
-        self.circuit = builder.build()
-        self.simulator = ComplexNoiseSimulator(self.circuit, noise_config)
+    def __init__(self, code_params: CodeParams, noise_config_dict: dict):
+        self.code_params = code_params
+        # 딕셔너리 형태의 설정을 리스트로 정규화하여 저장
+        self.noise_lists = {
+            k: (v if isinstance(v, list) else [v]) 
+            for k, v in noise_config_dict.items()
+        }
 
-    def generate_and_save(self, shots: int, save_dir: str, filename: str, batch_size: int = 50000):
-        """
-        데이터를 생성하고 .npz 형식으로 압축 저장합니다.
-        대용량 생성을 위해 batch_size 단위로 끊어서 처리합니다.
-        """
-        Path(save_dir).mkdir(parents=True, exist_ok=True)
-        filepath = Path(save_dir) / f"{filename}.npz"
-        
-        print(f"[{filename}] 데이터 생성을 시작합니다. (총 {shots} 샷)")
-        start_time = time.time()
+    def generate_and_save(self, shots: int, save_dir: str, filename: str, chunk_size: int = 1000):
+        print(f"[{filename}] 데이터 생성을 시작합니다. (총 {shots} 샷, 균등 분포 적용)")
         
         all_syndromes = []
         all_observables = []
         all_erasures = []
-        
-        shots_remaining = shots
-        while shots_remaining > 0:
-            current_shots = min(shots_remaining, batch_size)
-            syndromes, observables, erasures = self.simulator.generate_data(shots=current_shots)
+
+        generated_shots = 0
+        while generated_shots < shots:
+            current_batch = min(chunk_size, shots - generated_shots)
             
-            # boolean 타입을 int8(0과 1)로 변환하여 저장 용량 최적화
-            all_syndromes.append(syndromes.astype(np.int8))
-            all_observables.append(observables.astype(np.int8))
-            all_erasures.append(erasures.astype(np.int8))
+            # 매 청크마다 리스트에서 값을 하나씩 뽑아 NoiseParams 객체 생성
+            sampled_noise_kwargs = {
+                k: random.choice(v) for k, v in self.noise_lists.items()
+            }
+            noise_params = NoiseParams(**sampled_noise_kwargs)
             
-            shots_remaining -= current_shots
-            print(f"  -> 진행 상황: {shots - shots_remaining}/{shots} 샷 완료")
+            # 샘플링된 단일 값 객체로 빌더와 시뮬레이터 생성
+            builder = CustomCircuitBuilder(self.code_params, noise_params)
+            simulator = ComplexNoiseSimulator(builder.build(), noise_params)
             
-        # 리스트에 모인 배열들을 하나로 병합
-        final_syndromes = np.concatenate(all_syndromes, axis=0)
-        final_observables = np.concatenate(all_observables, axis=0)
-        final_erasures = np.concatenate(all_erasures, axis=0)
-        
-        # npz 압축 포맷으로 저장 (PyTorch DataLoader에서 읽기 아주 좋음)
+            s, o, e = simulator.generate_data(shots=current_batch)
+            
+            all_syndromes.append(s)
+            all_observables.append(o)
+            all_erasures.append(e)
+            
+            generated_shots += current_batch
+            if (generated_shots // chunk_size) % 10 == 0:
+                print(f"진행률: {generated_shots}/{shots}")
+
+        # 저장 로직 (기존과 동일)
+        os.makedirs(save_dir, exist_ok=True)
+        save_path = os.path.join(save_dir, f"{filename}.npz")
         np.savez_compressed(
-            filepath,
-            syndromes=final_syndromes,
-            observables=final_observables,
-            erasures=final_erasures
+            save_path,
+            syndromes=np.concatenate(all_syndromes, axis=0),
+            observables=np.concatenate(all_observables, axis=0),
+            erasures=np.concatenate(all_erasures, axis=0)
         )
-        
-        elapsed = time.time() - start_time
-        print(f"✅ 저장 완료: {filepath} (소요 시간: {elapsed:.2f}초)\n")
+        print(f"✅ {filename} 저장 완료: {save_path}")

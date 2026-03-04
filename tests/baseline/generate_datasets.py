@@ -5,7 +5,7 @@ def main():
     # 1. 훈련용 설정값 (예: distance 5에서 누설 2%, 상관관계 0.5%)
     code_config = CodeParams(distance=5, rounds=5)
     noise_config = NoiseParams(
-        p_gate=0.005, 
+        p_gate=[0.005, 0.01, 0.015], 
         p_meas=0.005, 
         p_corr=0.005, 
         p_leak=0.02

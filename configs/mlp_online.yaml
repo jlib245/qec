@@ -1,0 +1,50 @@
+# [양자 코드 설정] 
+code:
+  distance: 5
+  rounds: 5
+
+# [노이즈 설정]
+noise:
+  p_gate: [0.001, 0.005, 0.01]
+  p_meas: 0.005
+  p_corr: [0.001, 0.002]
+  p_leak: [0.001, 0.01, 0.03]
+
+# [시뮬레이션 설정] (평가 시 사용)
+simulation:
+  shots: 100000
+
+# [학습 설정] (필수)
+training:
+  data_mode: "online"   # "online" or "offline" 
+  batch_size: 512       # 배치 크기 (필수)
+  train_steps: 100000   # 온라인 학습 시 한 에포크당 훈련 데이터 생성 수
+  val_steps: 10000      # 온라인 학습 시 한 에포크당 검증 데이터 생성 수
+  epochs: 50
+  output_dir: "results/mlp_experiment_online"
+  
+  optimizer:
+    name: "AdamW"
+    kwargs:
+      lr: 0.001
+      weight_decay: 0.01
+      
+  scheduler:
+    name: "ReduceLROnPlateau"
+    kwargs:
+      mode: "min"
+      factor: 0.5
+      patience: 3
+
+  early_stopping:
+    patience: 20  
+
+# [모델 설정]
+model:
+  name: "erasure_mlp"
+  kwargs:
+    hidden_dim: 512
+
+# [디코더 설정] (평가 시 사용)
+decoder:
+  name: "neural_decoder"

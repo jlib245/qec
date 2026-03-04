@@ -1,19 +1,14 @@
-# 시뮬레이션 및 데이터 생성 설정
+# configs/experiment_mwpm.yaml
 simulation:
-  shots: 1000
+  train_steps: 100000  # 온라인 학습이므로 epoch의 개념보다 step이나 가상 데이터셋 크기를 지정
+  val_steps: 5000
 
-# 양자 코드 설정
 code:
   distance: 5
   rounds: 5
 
-# 노이즈 모델 설정
 noise:
-  p_gate: 0.005
-  p_meas: 0.005
-  p_corr: 0.001
-  p_leak: 0.03
-
-# 디코더 설정 (여기서 이름표만 바꾸면 디코더가 바뀝니다!)
-decoder:
-  name: "mwpm"  # registry에 등록한 이름
+  p_gate: [0.001, 0.005, 0.01]  # 3가지 확률에서 랜덤 샘플링
+  p_meas: 0.005                 # 고정값
+  p_corr: [0.001, 0.002]        # 2가지 확률에서 랜덤 샘플링
+  p_leak: [0.01, 0.03, 0.05]    # 3가지 확률에서 랜덤 샘플링
