@@ -4,10 +4,10 @@ code:
   rounds: 5
 
 noise:
-  p_gate: [0.001, 0.005, 0.01]
-  p_meas: 0.005
-  p_corr: [0.001, 0.002]
-  p_leak: [0.001, 0.01, 0.03]
+  p_gate: [0.006, 0.007, 0.008, 0.009, 0.01, 0.011, 0.012, 0.013, 0.014, 0.015]
+  p_meas: 0.0001
+  p_corr: 0.001
+  p_leak: [0.005, 0.01, 0.015]
 
 # [학습 설정]
 training:
@@ -16,10 +16,11 @@ training:
   val_path: "datasets/d5_complex_noise/val.npz"
   
   # [수동 입력 필수] 적지 않거나 파일의 실제 데이터보다 크게 적으면 에러가 납니다.
-  train_steps: 100000  # 학습에 사용할 데이터 개수 직접 기입
-  val_steps: 10000     # 검증에 사용할 데이터 개수 직접 기입
+  train_steps: 5000000   # 온라인 학습 시 한 에포크당 훈련 데이터 생성 수
+  val_steps: 50000      # 온라인 학습 시 한 에포크당 검증 데이터 생성 수
   
-  batch_size: 512
+  batch_size: 2048
+  chunk_size: 100000
   epochs: 50
   output_dir: "results/mlp_experiment_offline"
   
@@ -36,6 +37,9 @@ training:
       factor: 0.5
       patience: 3
 
+  early_stopping:
+    patience: 20  
+
 # [모델 설정]
 model:
   name: "erasure_mlp"
@@ -45,3 +49,8 @@ model:
 # [데이터 생성 설정] (파일이 없을 경우에만 사용)
 simulation:
   shots: 100000
+
+decoder:
+  name: "neural_decoder"
+  model_name: "erasure_mlp"
+  checkpoint_path: "results/mlp_experiment_offline_20260304_234339/best_model.pth"

@@ -1,57 +1,70 @@
-import os
+# qec_sim/data/generator.py
 import numpy as np
-import random
+from pathlib import Path
+import time
 from qec_sim.core.parameters import CodeParams, NoiseParams
 from qec_sim.core.builder import CustomCircuitBuilder
 from qec_sim.core.simulator import ComplexNoiseSimulator
 
 class DatasetGenerator:
-    def __init__(self, code_params: CodeParams, noise_config_dict: dict):
-        self.code_params = code_params
-        # 딕셔너리 형태의 설정을 리스트로 정규화하여 저장
-        self.noise_lists = {
-            k: (v if isinstance(v, list) else [v]) 
-            for k, v in noise_config_dict.items()
-        }
+    def __init__(self, code_config: CodeParams, noise_configs: list[NoiseParams]):
+        self.code_config = code_config
+        # 단일 설정이 들어와도 리스트로 래핑하여 통일
+        self.noise_configs = noise_configs if isinstance(noise_configs, list) else [noise_configs]
 
-    def generate_and_save(self, shots: int, save_dir: str, filename: str, chunk_size: int = 1000):
-        print(f"[{filename}] 데이터 생성을 시작합니다. (총 {shots} 샷, 균등 분포 적용)")
+    def generate_and_save(self, shots: int, save_dir: str, filename: str, batch_size: int = 50000):
+        Path(save_dir).mkdir(parents=True, exist_ok=True)
+        filepath = Path(save_dir) / f"{filename}.npz"
         
-        all_syndromes = []
-        all_observables = []
-        all_erasures = []
-
-        generated_shots = 0
-        while generated_shots < shots:
-            current_batch = min(chunk_size, shots - generated_shots)
+        num_configs = len(self.noise_configs)
+        print(f"[{filename}] 총 {shots}샷 생성을 시작합니다. ({num_configs}개의 노이즈 환경 분산)")
+        start_time = time.time()
+        
+        # 메타데이터를 알기 위해 첫 번째 환경으로 임시 회로 빌드
+        temp_circuit = CustomCircuitBuilder(self.code_config, self.noise_configs[0]).build()
+        
+        # 메모리 할당 (Pre-allocation)
+        final_syndromes = np.zeros((shots, temp_circuit.num_detectors), dtype=np.int8)
+        final_observables = np.zeros((shots, temp_circuit.num_observables), dtype=np.int8)
+        final_erasures = np.zeros((shots, temp_circuit.num_detectors), dtype=np.int8)
+        
+        # 전체 샷 N등분 계산 (나머지 처리 포함)
+        base_shots = shots // num_configs
+        remainder = shots % num_configs
+        
+        generated_count = 0
+        
+        for i, n_config in enumerate(self.noise_configs):
+            config_shots = base_shots + (1 if i < remainder else 0)
+            if config_shots == 0: continue
             
-            # 매 청크마다 리스트에서 값을 하나씩 뽑아 NoiseParams 객체 생성
-            sampled_noise_kwargs = {
-                k: random.choice(v) for k, v in self.noise_lists.items()
-            }
-            noise_params = NoiseParams(**sampled_noise_kwargs)
+            print(f"  -> 환경 {i+1}/{num_configs} (p_gate:{n_config.p_gate:.4f}, p_leak:{n_config.p_leak:.4f} 등): {config_shots}샷 생성 중")
             
-            # 샘플링된 단일 값 객체로 빌더와 시뮬레이터 생성
-            builder = CustomCircuitBuilder(self.code_params, noise_params)
-            simulator = ComplexNoiseSimulator(builder.build(), noise_params)
+            builder = CustomCircuitBuilder(self.code_config, n_config)
+            simulator = ComplexNoiseSimulator(builder.build(), n_config)
             
-            s, o, e = simulator.generate_data(shots=current_batch)
-            
-            all_syndromes.append(s)
-            all_observables.append(o)
-            all_erasures.append(e)
-            
-            generated_shots += current_batch
-            if (generated_shots // chunk_size) % 10 == 0:
-                print(f"진행률: {generated_shots}/{shots}")
-
-        # 저장 로직 (기존과 동일)
-        os.makedirs(save_dir, exist_ok=True)
-        save_path = os.path.join(save_dir, f"{filename}.npz")
+            config_generated = 0
+            while config_generated < config_shots:
+                current_shots = min(config_shots - config_generated, batch_size)
+                syndromes, observables, erasures = simulator.generate_data(shots=current_shots)
+                
+                end_idx = generated_count + current_shots
+                final_syndromes[generated_count:end_idx] = syndromes.astype(np.int8)
+                final_observables[generated_count:end_idx] = observables.astype(np.int8)
+                final_erasures[generated_count:end_idx] = erasures.astype(np.int8)
+                
+                generated_count = end_idx
+                config_generated += current_shots
+        
+        # ⭐️ 딥러닝 데이터 편향을 막기 위한 전체 데이터 랜덤 셔플링
+        print("  -> 데이터 혼합(Shuffling) 중...")
+        indices = np.random.permutation(shots)
+        
         np.savez_compressed(
-            save_path,
-            syndromes=np.concatenate(all_syndromes, axis=0),
-            observables=np.concatenate(all_observables, axis=0),
-            erasures=np.concatenate(all_erasures, axis=0)
+            filepath,
+            syndromes=final_syndromes[indices],
+            observables=final_observables[indices],
+            erasures=final_erasures[indices]
         )
-        print(f"✅ {filename} 저장 완료: {save_path}")
+        
+        print(f"✅ 저장 완료: {filepath} (소요 시간: {time.time() - start_time:.2f}초)\n")

@@ -12,14 +12,15 @@ noise:
 
 # [시뮬레이션 설정] (평가 시 사용)
 simulation:
-  shots: 100000
+  shots: 1000000
 
 # [학습 설정] (필수)
 training:
   data_mode: "online"   # "online" or "offline" 
-  batch_size: 512       # 배치 크기 (필수)
-  train_steps: 100000   # 온라인 학습 시 한 에포크당 훈련 데이터 생성 수
-  val_steps: 10000      # 온라인 학습 시 한 에포크당 검증 데이터 생성 수
+  batch_size: 2048       # 배치 크기
+  chunk_size: 100000     # 데이터 생성 단위 (한 번에 생성하는 데이터 수)
+  train_steps: 2000000   # 온라인 학습 시 한 에포크당 훈련 데이터 생성 수
+  val_steps: 50000      # 온라인 학습 시 한 에포크당 검증 데이터 생성 수
   epochs: 50
   output_dir: "results/mlp_experiment_online"
   
@@ -37,7 +38,7 @@ training:
       patience: 3
 
   early_stopping:
-    patience: 20  
+    patience: 15  
 
 # [모델 설정]
 model:
