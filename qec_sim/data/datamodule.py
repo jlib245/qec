@@ -1,8 +1,9 @@
 # qec_sim/data/datamodule.py
-import torch
 import numpy as np
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader
 from abc import ABC, abstractmethod
+
+from qec_sim.data.dataset import OfflineQECDataset
 
 # 1. 전략(Strategy) 인터페이스 정의
 class DataStrategy(ABC):
@@ -27,8 +28,8 @@ class OfflineDataStrategy(DataStrategy):
         self.val_path = val_path
         self.batch_size = batch_size
         
-        # 메타데이터 파악을 위해 첫 파일의 헤더만 미리 로드
-        sample = np.load(train_path)
+        # 메타데이터 파악을 위해 mmap_mode='r'을 사용하여 메모리 효율적으로 헤더만 로드
+        sample = np.load(train_path, mmap_mode='r')
         self._num_detectors = sample['syndromes'].shape[1]
         self._num_observables = sample['observables'].shape[1]
 
@@ -38,16 +39,9 @@ class OfflineDataStrategy(DataStrategy):
     @property
     def num_observables(self): return self._num_observables
 
-    def _create_dataset(self, path: str) -> TensorDataset:
-        data = np.load(path)
-        syndromes = data['syndromes']
-        erasures = data.get('erasures', np.zeros_like(syndromes))
-        observables = data['observables']
-        
-        # (Batch, 2채널, Detectors) 형태로 결합
-        x = torch.tensor(np.stack([syndromes, erasures], axis=1), dtype=torch.float32)
-        y = torch.tensor(observables, dtype=torch.float32)
-        return TensorDataset(x, y)
+    def _create_dataset(self, path: str) -> OfflineQECDataset:
+        # dataset.py의 OfflineQECDataset에 책임을 위임.
+        return OfflineQECDataset(path)
 
     def get_loaders(self):
         train_ds = self._create_dataset(self.train_path)

@@ -1,0 +1,45 @@
+# config.yaml
+code:
+  name: "surface_code"
+  distance: 5
+  rounds: 5
+
+noise:
+  # 리스트로 제공하면 내부적으로 Cartesian Product를 통해 2개의 노이즈 환경으로 확장됩니다.
+  p_gate: [0.007, 0.008, 0.009, 0.010, 0.011, 0.012, 0.013, 0.014, 0.015] 
+  p_meas: 0.001
+  p_corr: 0.0
+  p_leak: 0.002
+
+training:
+  data_mode: "offline"
+  train_path: "./data/train_data.npz"    # 확장자는 자동(.npz)으로 붙으므로 제외
+  val_path: "./data/val_data.npz"
+  train_steps: 100
+  val_steps: 20
+  epochs: 50
+  batch_size: 1024
+  chunk_size: 50000
+  optimizer:
+    name: "Adam"
+    kwargs:
+      lr: 0.001
+  criterion:
+    name: "bce_with_logits"  # 📌 필수 기입 (기본값 제거됨)
+    kwargs: {}
+  output_dir: "./results/experiment"
+  early_stopping:
+    patience: 15
+  scheduler: {}
+
+model:
+  name: "jung_cnn_low"  # 레지스트리에 등록된 모델 이름
+  kwargs: {}
+
+decoder:
+  name: "neural_decoder"
+  weight_path: ""       # 학습 전이므로 비워둡니다 (평가 시에는 학습된 경로 입력)
+  model_kwargs: {}
+
+simulation:
+  shots: 10000

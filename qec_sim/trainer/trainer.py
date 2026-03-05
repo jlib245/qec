@@ -62,8 +62,11 @@ class Trainer:
 
             # 1. 학습 및 검증 수행
             train_loss = self.train_epoch()
-            val_loss, val_ler = self.evaluator.validate_on_loader(self.model, self.val_loader)
-            
+            val_loss, val_ler = self.evaluator.validate_on_loader(
+                self.model, 
+                self.val_loader, 
+                self.val_steps
+            )
             # 2. 현재 학습률(LR) 가져오기
             current_lr = self.optimizer.param_groups[0]['lr']
             

@@ -2,7 +2,10 @@
 
 import stim
 import numpy as np
-from ..config.schema import NoiseParams
+import random
+
+from qec_sim.config.schema import NoiseParams
+from qec_sim.circuit.registry import build_circuit
 
 class CircuitNoiseSimulator:
     def __init__(self, circuit: stim.Circuit, noise_params: NoiseParams):
@@ -43,3 +46,24 @@ class CircuitNoiseSimulator:
         # 2) observables: 우리가 지켜야 할 진짜 논리값 (정답 라벨)
         # 3) erasure_masks: 어디서 누설이 났는지 알려주는 1/0 맵 (딥러닝 모델의 추가 입력으로 사용!)
         return syndromes, observables, erasure_masks
+    
+class SimulatorPool:
+    """여러 노이즈 환경의 시뮬레이터를 묶어서 관리하는 풀(Pool) 클래스"""
+    def __init__(self, code_config, noise_configs):
+        self.simulators = []
+        self.noise_configs = noise_configs if isinstance(noise_configs, list) else [noise_configs]
+        
+        for n_config in self.noise_configs:
+            builder = build_circuit(code_config.name, code_config, n_config)
+            self.simulators.append(CircuitNoiseSimulator(builder.build(), n_config))
+            
+        # 메타데이터 접근용 (첫 번째 시뮬레이터 기준)
+        self.base_circuit = self.simulators[0].circuit
+        self.num_detectors = self.base_circuit.num_detectors
+        self.num_observables = self.base_circuit.num_observables
+
+    def get_random_simulator(self) -> CircuitNoiseSimulator:
+        return random.choice(self.simulators)
+        
+    def get_all_simulators(self) -> list[CircuitNoiseSimulator]:
+        return self.simulators

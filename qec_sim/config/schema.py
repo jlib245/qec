@@ -2,6 +2,7 @@
 import yaml
 from dataclasses import dataclass, field
 from typing import Dict, Any, Optional, List, Union
+from itertools import product # 경우의 수 확장을 위해 추가
 
 @dataclass
 class CodeParams:
@@ -57,7 +58,6 @@ class ExperimentConfig:
         with open(path, 'r') as f:
             data = yaml.safe_load(f)
             
-        # get() 없이 키 직접 접근으로 필수값 누락 시 조기 에러 발생 (Fail-Fast)
         return cls(
             code=CodeParams(**data['code']),
             noise=NoiseParams(**data['noise']),
@@ -66,3 +66,14 @@ class ExperimentConfig:
             decoder=DecoderConfig(**data['decoder']),
             simulation=data['simulation']
         )
+
+    def get_expanded_noise_configs(self) -> List[NoiseParams]:
+        """YAML의 리스트 형태 노이즈 설정을 모든 경우의 수(Cartesian Product)로 확장합니다."""
+        n = self.noise
+        keys = ['p_gate', 'p_meas', 'p_corr', 'p_leak']
+        
+        # 각 속성이 리스트면 그대로 사용, 단일값이면 리스트로 래핑
+        values = [getattr(n, k) if isinstance(getattr(n, k), list) else [getattr(n, k)] for k in keys]
+        
+        combinations = product(*values)
+        return [NoiseParams(**dict(zip(keys, v))) for v in combinations]

@@ -16,4 +16,5 @@ def build_circuit(name, code_config, noise_config, **kwargs):
                          f"사용 가능한 빌더: {list(_BUILDER_REGISTRY.keys())}")
     
     builder_class = _BUILDER_REGISTRY[name]
-    return builder_class(code_config=code_config, noise_config=noise_config, **kwargs)
+    # 넘겨주는 키워드 인자 이름을 builder.py에 맞춰 code_params, noise_params로 변경.
+    return builder_class(code_params=code_config, noise_params=noise_config, **kwargs)
