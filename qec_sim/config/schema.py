@@ -21,17 +21,16 @@ class TrainingConfig:
     data_mode: str
     train_path: str
     val_path: str
-    train_steps: int
-    val_steps: int 
+    train_steps: Optional[int]
+    val_steps: Optional[int]
     epochs: int
     batch_size: int
     chunk_size: int
     optimizer: Dict[str, Any]
+    criterion: Dict[str, Any]
     output_dir: str 
-    save_path: str 
-    early_stopping: int
-    scheduler: Dict[str, Any] = field(default_factory=dict)
-    
+    early_stopping: Dict[str, int]
+    scheduler: Dict[str, Any]
 
 @dataclass
 class ModelConfig:

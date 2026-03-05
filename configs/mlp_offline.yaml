@@ -29,7 +29,12 @@ training:
     kwargs:
       lr: 0.001
       weight_decay: 0.01
-      
+  
+  criterion:
+    name: "bce_with_logits"
+    kwargs:
+      reduction: "mean"
+
   scheduler:
     name: "ReduceLROnPlateau"
     kwargs:
@@ -52,5 +57,6 @@ simulation:
 
 decoder:
   name: "neural_decoder"
-  model_name: "erasure_mlp"
-  checkpoint_path: "results/mlp_experiment_offline_20260304_234339/best_model.pth"
+  weight_path: "results/mlp_experiment_offline/best_model.pth"
+  model_kwargs:
+    model_name: "erasure_mlp"

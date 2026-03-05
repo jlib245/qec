@@ -24,7 +24,7 @@ class OfflineQECDataset(Dataset):
         return torch.tensor(x, dtype=torch.float32), torch.tensor(y, dtype=torch.float32)
 
 class OnlineQECDataset(IterableDataset):
-    def __init__(self, code_config, noise_configs, epoch_size, chunk_size=100000):
+    def __init__(self, code_config, noise_configs, epoch_size, chunk_size):
         self.code_config = code_config
         self.noise_configs = noise_configs if isinstance(noise_configs, list) else [noise_configs]
         self.epoch_size = epoch_size

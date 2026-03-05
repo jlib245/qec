@@ -8,7 +8,8 @@ class JungCNN_Low(nn.Module):
     CNN-based decoder based on Jung et al., IEEE TQE 2024.
     [Stim 적용] H 행렬 대신 stim의 디텍터 시공간 좌표(x, y, t)를 사용하여 그리드를 매핑.
     """
-    def __init__(self, detector_coords: dict, num_observables: int, code_distance: int, num_detectors: int):
+    def __init__(self, detector_coords: dict, num_observables: int, code_distance: int, num_detectors: int,
+                 n_filters: int = 64):
         """
         Args:
             detector_coords (dict): stim.Circuit().get_detector_coordinates() 의 반환값 
@@ -16,6 +17,7 @@ class JungCNN_Low(nn.Module):
             num_observables (int): 예측해야 할 논리적 관측값(Logical Observables)의 수
             code_distance (int): L (Surface code distance)
             num_detectors (int): 총 디텍터 수 (입력 신드롬 텐서의 크기)
+            n_filters (int): CNN 필터 수
         """
         super().__init__()
         self.L = code_distance
