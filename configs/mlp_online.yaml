@@ -2,6 +2,7 @@
 code:
   distance: 5
   rounds: 5
+  name: "surface_code"
 
 # [노이즈 설정]
 noise:

@@ -2,9 +2,9 @@
 
 import stim
 import numpy as np
-from .parameters import NoiseParams
+from ..config.schema import NoiseParams
 
-class ComplexNoiseSimulator:
+class CircuitNoiseSimulator:
     def __init__(self, circuit: stim.Circuit, noise_params: NoiseParams):
         self.circuit = circuit
         self.noise = noise_params

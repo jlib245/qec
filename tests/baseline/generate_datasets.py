@@ -1,4 +1,4 @@
-from qec_sim.core.parameters import CodeParams, NoiseParams
+from qec_sim.config.schema import CodeParams, NoiseParams
 from qec_sim.data.generator import DatasetGenerator
 
 def main():

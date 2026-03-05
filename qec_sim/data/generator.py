@@ -2,9 +2,10 @@
 import numpy as np
 from pathlib import Path
 import time
-from qec_sim.core.parameters import CodeParams, NoiseParams
-from qec_sim.core.builder import CustomCircuitBuilder
-from qec_sim.core.simulator import ComplexNoiseSimulator
+
+from qec_sim.config.schema import CodeParams, NoiseParams
+from qec_sim.circuit.registry import build_circuit
+from qec_sim.circuit.simulator import CircuitNoiseSimulator
 
 class DatasetGenerator:
     def __init__(self, code_config: CodeParams, noise_configs: list[NoiseParams]):
@@ -20,10 +21,11 @@ class DatasetGenerator:
         print(f"[{filename}] 총 {shots}샷 생성을 시작합니다. ({num_configs}개의 노이즈 환경 분산)")
         start_time = time.time()
         
-        # 메타데이터를 알기 위해 첫 번째 환경으로 임시 회로 빌드
-        temp_circuit = CustomCircuitBuilder(self.code_config, self.noise_configs[0]).build()
+        # 메타데이터를 알기 위해 첫 번째 환경으로 임시 회로 빌드 (레지스트리 사용)
+        temp_builder = build_circuit(self.code_config.name, self.code_config, self.noise_configs[0])
+        temp_circuit = temp_builder.build()
         
-        # 메모리 할당 (Pre-allocation)
+        # 메모리 할당 
         final_syndromes = np.zeros((shots, temp_circuit.num_detectors), dtype=np.int8)
         final_observables = np.zeros((shots, temp_circuit.num_observables), dtype=np.int8)
         final_erasures = np.zeros((shots, temp_circuit.num_detectors), dtype=np.int8)
@@ -40,8 +42,9 @@ class DatasetGenerator:
             
             print(f"  -> 환경 {i+1}/{num_configs} (p_gate:{n_config.p_gate:.4f}, p_leak:{n_config.p_leak:.4f} 등): {config_shots}샷 생성 중")
             
-            builder = CustomCircuitBuilder(self.code_config, n_config)
-            simulator = ComplexNoiseSimulator(builder.build(), n_config)
+            # 레지스트리를 이용한 동적 빌더 및 시뮬레이터 생성
+            builder = build_circuit(self.code_config.name, self.code_config, n_config)
+            simulator = CircuitNoiseSimulator(builder.build(), n_config)
             
             config_generated = 0
             while config_generated < config_shots:
@@ -56,7 +59,7 @@ class DatasetGenerator:
                 generated_count = end_idx
                 config_generated += current_shots
         
-        # ⭐️ 딥러닝 데이터 편향을 막기 위한 전체 데이터 랜덤 셔플링
+        # 딥러닝 데이터 편향을 막기 위한 전체 데이터 랜덤 셔플링
         print("  -> 데이터 혼합(Shuffling) 중...")
         indices = np.random.permutation(shots)
         

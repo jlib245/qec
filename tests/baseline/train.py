@@ -3,7 +3,7 @@ import os
 load_dotenv()  # .env 파일의 내용을 환경 변수로 로드
 
 import argparse
-from qec_sim.core.pipelines import TrainingPipeline
+from qec_sim.trainer.pipeline import TrainingPipeline
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

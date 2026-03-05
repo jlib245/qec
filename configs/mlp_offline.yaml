@@ -2,7 +2,7 @@
 code:
   distance: 5
   rounds: 5
-
+  name: "surface_code"
 noise:
   p_gate: [0.006, 0.007, 0.008, 0.009, 0.01, 0.011, 0.012, 0.013, 0.014, 0.015]
   p_meas: 0.0001

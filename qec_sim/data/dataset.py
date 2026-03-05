@@ -2,6 +2,10 @@
 import torch
 from torch.utils.data import Dataset, IterableDataset
 import numpy as np
+import random
+
+from qec_sim.circuit.registry import build_circuit
+from qec_sim.circuit.simulator import CircuitNoiseSimulator
 
 class OfflineQECDataset(Dataset):
     def __init__(self, filepath: str):
@@ -31,18 +35,14 @@ class OnlineQECDataset(IterableDataset):
         if worker_info is not None:
             # 각 워커마다 서로 다른 시드를 갖게 함
             np.random.seed(worker_info.id + int(torch.initial_seed()) % 2**32)
-            import random
             random.seed(worker_info.id + 100)
         
-        import random
-        from qec_sim.core.builder import CustomCircuitBuilder
-        from qec_sim.core.simulator import ComplexNoiseSimulator
-        
-        # 모든 노이즈 환경에 대해 시뮬레이터를 미리 준비해 둡니다.
+        # 모든 노이즈 환경에 대해 시뮬레이터를 미리 준비
         simulators = []
         for n_config in self.noise_configs:
-            builder = CustomCircuitBuilder(self.code_config, n_config)
-            simulators.append(ComplexNoiseSimulator(builder.build(), n_config))
+            # 설정 파일의 code.name (예: "surface_code")을 사용
+            builder = build_circuit(self.code_config.name, self.code_config, n_config)
+            simulators.append(CircuitNoiseSimulator(builder.build(), n_config))
 
         shots_generated = 0
         while shots_generated < self.epoch_size:

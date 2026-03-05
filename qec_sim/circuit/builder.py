@@ -1,15 +1,33 @@
+# qec_sim/circuit/builder.py
+from abc import ABC, abstractmethod
 import stim
-from .parameters import CodeParams, NoiseParams
 
-class CustomCircuitBuilder:
-    def __init__(self, code_params: CodeParams, noise_params: NoiseParams):
+# 설정 스키마 및 레지스트리 임포트
+from qec_sim.config.schema import CodeParams, NoiseParams
+from qec_sim.circuit.registry import register_builder
+
+# 1. 모든 빌더가 지켜야 할 공통 규격 (인터페이스)
+class BaseCircuitBuilder(ABC):
+    def __init__(self, code_params: CodeParams, noise_params: NoiseParams, **kwargs):
+        self.code_params = code_params
+        self.noise_params = noise_params
+        self.kwargs = kwargs
+        
+    @abstractmethod
+    def build(self) -> stim.Circuit:
+        pass
+
+# 2. 데코레이터로 "surface_code"라는 이름 등록.
+@register_builder("surface_code")
+class SurfaceCodeBuilder(BaseCircuitBuilder):
+    def __init__(self, code_params: CodeParams, noise_params: NoiseParams, **kwargs):
         """
         양자 회로를 생성하는 빌더 클래스.
         노이즈 파라미터가 리스트인 경우 첫 번째 값을 기준으로 기본 회로를 구성.
         """
+        super().__init__(code_params, noise_params, **kwargs)
         self.code = code_params
         
-        # 각 노이즈 파라미터가 리스트일 경우를 대비해 단일 float 값으로 정규화
         self.p_gate = noise_params.p_gate[0] if isinstance(noise_params.p_gate, list) else noise_params.p_gate
         self.p_meas = noise_params.p_meas[0] if isinstance(noise_params.p_meas, list) else noise_params.p_meas
         self.p_corr = noise_params.p_corr[0] if isinstance(noise_params.p_corr, list) else noise_params.p_corr

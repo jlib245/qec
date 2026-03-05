@@ -1,6 +1,6 @@
 import time
 from torch.utils.data import DataLoader
-from qec_sim.core.parameters import CodeParams, NoiseParams
+from qec_sim.config.schema import CodeParams, NoiseParams
 from qec_sim.data.dataset import OfflineQECDataset, OnlineQECDataset
 
 def main():
