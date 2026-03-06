@@ -18,6 +18,7 @@ from qec_sim.metrics.registry import build_criterion
 from qec_sim.trainer.trainer import Trainer
 from qec_sim.trainer.callbacks import CSVLogger, ModelCheckpoint, EarlyStopping
 from qec_sim.data.generator import DatasetGenerator
+from qec_sim.data.datamodule import OnlineDataStrategy
 
 class DataPreparer:
     """데이터셋의 존재 여부를 확인하고 없으면 자동 생성하는 단일 책임을 가집니다."""
@@ -79,22 +80,28 @@ class TrainingPipeline:
         """YAML 설정을 기반으로 옵티마이저 생성"""
         opt_config = self.config.training.optimizer
         return getattr(optim, opt_config['name'])(model.parameters(), **opt_config['kwargs'])
+    
+    def _get_scheduler(self, optimizer):
+        """YAML 설정을 기반으로 러닝레이트 스케줄러 생성"""
+        sched_config = self.config.training.scheduler
+        return getattr(torch.optim.lr_scheduler, sched_config['name'])(optimizer, **sched_config.get('kwargs', {}))
 
     def run(self):
         """전체 학습 파이프라인 실행 로직"""
         # 1. 작업 공간 생성
         self._setup_workspace()
         
-        # 2. 데이터 준비 (DataPreparer Class 호출)
+        # 2. 데이터 및 데이터 로더 준비 (DataPreparer Class 호출)
         if self.config.training.data_mode == 'offline':
             DataPreparer.prepare_offline_data(self.config)
-
-        # 3. 데이터 로더 준비
-        data_strategy = OfflineDataStrategy(
-            train_path=self.config.training.train_path,
-            val_path=self.config.training.val_path,
-            batch_size=self.config.training.batch_size
-        )
+            data_strategy = OfflineDataStrategy(config=self.config)
+            
+        elif self.config.training.data_mode == 'online':
+            from qec_sim.data.datamodule import OnlineDataStrategy
+            data_strategy = OnlineDataStrategy(config=self.config)
+        else:
+            raise ValueError(f"지원하지 않는 데이터 모드입니다.: {self.config.training.data_mode}")
+        
         datamodule = QECDataModule(strategy=data_strategy)
         train_loader, val_loader = datamodule.get_loaders()
 
@@ -130,13 +137,15 @@ class TrainingPipeline:
         ]
 
         # 6. 트레이너 실행
+        optimizer = self._get_optimizer(model)
+        scheduler = self._get_scheduler(optimizer)
         trainer = Trainer(
             model=model, 
             evaluator=evaluator, 
             train_loader=train_loader, 
             val_loader=val_loader, 
-            optimizer=self._get_optimizer(model),
-            scheduler=None, # 필요한 경우 스케줄러 연동  *****필요한 경우가 필수 아닌가?
+            optimizer=optimizer,
+            scheduler=scheduler,
             callbacks=callbacks,
             train_steps=self.config.training.train_steps,
             val_steps=self.config.training.val_steps

@@ -27,6 +27,11 @@ class TrainingConfig:
     epochs: int
     batch_size: int
     chunk_size: int
+
+    num_workers: int
+    prefetch_factor: int
+    pin_memory: bool
+
     optimizer: Dict[str, Any]
     criterion: Dict[str, Any]
     output_dir: str 

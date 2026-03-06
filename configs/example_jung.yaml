@@ -5,21 +5,26 @@ code:
   rounds: 5
 
 noise:
-  # 리스트로 제공하면 내부적으로 Cartesian Product를 통해 2개의 노이즈 환경으로 확장됩니다.
+  # 리스트로 제공하면 p_gate*pe_meas*p_corr*pe_leak개의 노이즈 환경으로 확장됩니다.
   p_gate: [0.007, 0.008, 0.009, 0.010, 0.011, 0.012, 0.013, 0.014, 0.015] 
   p_meas: 0.001
   p_corr: 0.0
   p_leak: 0.002
 
 training:
-  data_mode: "offline"
+  data_mode: "online"
   train_path: "./data/train_data.npz"    # 확장자는 자동(.npz)으로 붙으므로 제외
   val_path: "./data/val_data.npz"
-  train_steps: 100
-  val_steps: 20
+  train_steps: 10000
+  val_steps: 2000
   epochs: 50
   batch_size: 1024
   chunk_size: 50000
+
+  num_workers: 4          # 0으로 두면 메인 프로세스만 사용, 4~8 권장
+  prefetch_factor: 2      # num_workers가 1 이상일 때, 워커당 미리 만들어둘 배치의 수
+  pin_memory: true        # 데이터를 GPU로 보낼 때 속도 향상 (True 권장)
+
   optimizer:
     name: "Adam"
     kwargs:
@@ -30,7 +35,12 @@ training:
   output_dir: "./results/experiment"
   early_stopping:
     patience: 15
-  scheduler: {}
+  scheduler:
+    name: "ReduceLROnPlateau"
+    kwargs:
+        mode: "min"
+        factor: 0.5
+        patience: 2
 
 model:
   name: "jung_cnn_low"  # 레지스트리에 등록된 모델 이름

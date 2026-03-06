@@ -44,7 +44,7 @@ class SurfaceCodeBuilder(BaseCircuitBuilder):
             rounds=self.code.rounds,
             after_clifford_depolarization=self.p_gate,
             before_measure_flip_probability=self.p_meas,
-            # p_corr나 p_leak은 기본 생성기 인자에 없을 수 있으나, 
-            # 커스텀 회로 구성 시 위에서 정규화한 속성들을 사용하면 됩니다.
+            # p_leak은 simulator.py에서 별도 후처리, -> Herald Erasure로 처리 가능..?
+            # p_corr은 현재 미구현.
         )
         return circuit

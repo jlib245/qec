@@ -27,12 +27,21 @@ class OnlineQECDataset(IterableDataset):
         self.epoch_size = epoch_size
         self.chunk_size = chunk_size
         self.pool = SimulatorPool(code_config, noise_configs)
+        
+    def __len__(self):
+        return self.epoch_size
 
     def __iter__(self):
         worker_info = torch.utils.data.get_worker_info()
         if worker_info is not None:
+            # 워커별로 Seed를 다르게 주어 데이터 중복을 막음
             np.random.seed(worker_info.id + int(torch.initial_seed()) % 2**32)
             random.seed(worker_info.id + 100)
+            
+            # 멀티 워커 사용 시 전체 샷 수를 워커 개수만큼 N등분 분배
+            target_shots = self.epoch_size // worker_info.num_workers
+        else:
+            target_shots = self.epoch_size
         
         shots_generated = 0
         while shots_generated < self.epoch_size:
@@ -43,7 +52,10 @@ class OnlineQECDataset(IterableDataset):
             syndromes, observables, erasures = simulator.generate_data(shots=current_chunk)
             shots_generated += current_chunk
 
+            # 벡터 연산으로 텐서 변환하여 반환
+            x_chunk = np.stack([syndromes, erasures], axis=1)
+            x_tensor = torch.tensor(x_chunk, dtype=torch.float32)
+            y_tensor = torch.tensor(observables, dtype=torch.float32)
+
             for i in range(current_chunk):
-                x = np.stack([syndromes[i], erasures[i]], axis=0)
-                y = observables[i]
-                yield torch.tensor(x, dtype=torch.float32), torch.tensor(y, dtype=torch.float32)
+                yield x_tensor[i], y_tensor[i]
