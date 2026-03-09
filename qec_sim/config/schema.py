@@ -42,6 +42,7 @@ class TrainingConfig:
 class ModelConfig:
     name: str
     kwargs: Dict[str, Any] = field(default_factory=dict)
+    preprocessor: Dict[str, Any] = field(default_factory=dict)
 
 @dataclass
 class DecoderConfig:

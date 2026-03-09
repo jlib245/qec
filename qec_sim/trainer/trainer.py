@@ -1,4 +1,6 @@
 import torch
+import torch.nn as nn
+from tqdm import tqdm
 
 class Trainer:
     def __init__(self, model, evaluator, train_loader, val_loader, optimizer, scheduler, callbacks, train_steps, val_steps):
