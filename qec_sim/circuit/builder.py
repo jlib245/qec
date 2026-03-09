@@ -23,7 +23,7 @@ class SurfaceCodeBuilder(BaseCircuitBuilder):
     def __init__(self, code_params: CodeParams, noise_params: NoiseParams, **kwargs):
         """
         양자 회로를 생성하는 빌더 클래스.
-        노이즈 파라미터가 리스트인 경우 첫 번째 값을 기준으로 기본 회로를 구성.
+        노이즈 파라미터가 리스트인 경우 첫 번째 값을 기준으로 대표 회로를 구성.
         """
         super().__init__(code_params, noise_params, **kwargs)
         self.code = code_params
@@ -44,7 +44,7 @@ class SurfaceCodeBuilder(BaseCircuitBuilder):
             rounds=self.code.rounds,
             after_clifford_depolarization=self.p_gate,
             before_measure_flip_probability=self.p_meas,
-            # p_leak은 simulator.py에서 별도 후처리, -> Herald Erasure로 처리 가능..?
+            # p_leak은 simulator.py에서 별도 후처리, -> Herald Erasure로 처리 가능..? -> but 회로 다 뜯어야 할 것
             # p_corr은 현재 미구현.
         )
         return circuit
