@@ -1,5 +1,7 @@
 import os
+import random
 import datetime
+import numpy as np
 import torch
 
 from qec_sim.config.schema import ExperimentConfig
@@ -7,82 +9,92 @@ from qec_sim.trainer.factory import ComponentFactory
 from qec_sim.trainer.trainer import Trainer
 from qec_sim.metrics.evaluator import Evaluator
 from qec_sim.metrics.registry import build_criterion
-from qec_sim.trainer.callbacks import CSVLogger, ModelCheckpoint, EarlyStopping
+from qec_sim.trainer.callbacks import (
+    CSVLogger, RunLogger, ConfigSaver,
+    BestModelSaver, Checkpoint, EarlyStopping,
+)
+
 
 class TrainingPipeline:
-    """
-    [최상위 계층: 실행 진입점]
-    사용자의 Config를 읽어들여 시스템을 조립하고, 학습 루프를 끝까지 완주시키는 오케스트라 지휘자입니다.
-    """
     def __init__(self, config_path: str):
         self.config_path = config_path
         self.config = ExperimentConfig.from_yaml(config_path)
-        
-        # Mac(MPS), NVIDIA(CUDA), CPU 자동 할당
         self.device = torch.device(
-            "cuda" if torch.cuda.is_available() else 
+            "cuda" if torch.cuda.is_available() else
             "mps" if torch.backends.mps.is_available() else "cpu"
         )
         self.workspace = {}
 
     def _setup_workspace(self):
-        """결과물을 저장할 디렉토리와 파일 경로를 독립적으로 생성합니다."""
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_dir = f"{self.config.training.output_dir}_{timestamp}"
-        os.makedirs(output_dir, exist_ok=True)
-        
+        root = f"{self.config.training.output_dir}_{timestamp}"
+        os.makedirs(root, exist_ok=True)
         self.workspace = {
-            "root": output_dir,
-            "log": os.path.join(output_dir, "training_log.csv"),
-            "best_model": os.path.join(output_dir, "best_model.pth"),
-            "last_model": os.path.join(output_dir, "last_model.pth")
+            "root":        root,
+            "csv_log":     os.path.join(root, "training_log.csv"),
+            "run_log":     os.path.join(root, "run.log"),
+            "config":      os.path.join(root, "config.yaml"),
+            "best_model":  os.path.join(root, "best_model.pth"),
+            "checkpoint":  os.path.join(root, "checkpoint.pth"),
+            "last_model":  os.path.join(root, "last_model.pth"),
         }
 
+    @staticmethod
+    def _set_seed(seed: int):
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
     def run(self):
-        """파이프라인의 전체 실행 흐름"""
-        print(f"🚀 학습 파이프라인 시작 (Device: {self.device})")
         self._setup_workspace()
-        
-        # 1. 부품 조립 
-        # 팩토리가 Config를 보고 데이터 공급기와 래핑된 모델을 완벽히 짝지어 반환합니다.
+
+        seed = self.config.training.seed
+        if seed is not None:
+            self._set_seed(seed)
+            print(f"Seed 고정: {seed}")
+
+        print(f"학습 파이프라인 시작 (Device: {self.device})")
+        print(f"결과 저장 위치: {self.workspace['root']}\n")
+
         datamodule, wrapped_model = ComponentFactory.build_system(self.config)
         wrapped_model = wrapped_model.to(self.device)
-        
-        # 2. 데이터 준비 및 로더 획득
+
         print("데이터를 준비합니다...")
-        datamodule.strategy.prepare() 
+        datamodule.strategy.prepare()
         train_loader, val_loader = datamodule.get_loaders()
 
-        # 3. 손실 함수, 평가 지표, 옵티마이저, 스케줄러 세팅
         criterion = build_criterion(
-            self.config.training.criterion['name'], 
+            self.config.training.criterion['name'],
             **self.config.training.criterion.get('kwargs', {})
         )
         evaluator = Evaluator(device=self.device, criterion=criterion)
-        
-        # 래퍼 모델의 파라미터를 옵티마이저에 전달 (내부 코어 모델의 파라미터도 자동 포함됨)
+
         optimizer = getattr(torch.optim, self.config.training.optimizer['name'])(
-            wrapped_model.parameters(), 
+            wrapped_model.parameters(),
             **self.config.training.optimizer['kwargs']
         )
-        
+
         scheduler = None
-        if hasattr(self.config.training, 'scheduler') and self.config.training.scheduler:
+        if self.config.training.scheduler:
             scheduler = getattr(torch.optim.lr_scheduler, self.config.training.scheduler['name'])(
-                optimizer, 
+                optimizer,
                 **self.config.training.scheduler.get('kwargs', {})
             )
 
-        # 4. 콜백 설정 (로깅, 체크포인트, 조기 종료)
-        patience = self.config.training.early_stopping['patience']
         callbacks = [
-            CSVLogger(log_path=self.workspace["log"]),
-            ModelCheckpoint(save_path=self.workspace["best_model"], monitor='val_loss'),
-            EarlyStopping(patience=patience, monitor='val_loss')
+            ConfigSaver(src_path=self.config_path,        dst_path=self.workspace["config"]),
+            RunLogger(log_path=self.workspace["run_log"]),
+            CSVLogger(log_path=self.workspace["csv_log"]),
+            BestModelSaver(save_path=self.workspace["best_model"], monitor='val_loss'),
+            Checkpoint(save_path=self.workspace["checkpoint"]),
+            EarlyStopping(patience=self.config.training.early_stopping['patience'], monitor='val_loss'),
         ]
 
-        # 5. 트레이너 실행
-        print("트레이너를 초기화하고 학습을 시작합니다...")
+        # online 모드: dataset이 epoch 크기를 직접 제어 → Trainer steps 제한 불필요
+        is_online = self.config.training.data_mode == "online"
         trainer = Trainer(
             wrapped_model=wrapped_model,
             evaluator=evaluator,
@@ -91,13 +103,11 @@ class TrainingPipeline:
             optimizer=optimizer,
             scheduler=scheduler,
             callbacks=callbacks,
-            train_steps=getattr(self.config.training, 'train_steps', None),
-            val_steps=getattr(self.config.training, 'val_steps', None)
+            train_steps=None if is_online else self.config.training.train_steps,
+            val_steps=None if is_online else self.config.training.val_steps,
         )
-        
-        # 학습 루프 진입
+
         trainer.fit(epochs=self.config.training.epochs)
-        
-        # 학습 완전 종료 후 마지막 상태 저장
+
         torch.save(wrapped_model.state_dict(), self.workspace["last_model"])
-        print(f"✅ 학습 파이프라인 종료. 모든 결과가 {self.workspace['root']} 디렉토리에 저장되었습니다.")
+        print(f"\n학습 완료. 저장 위치: {self.workspace['root']}")

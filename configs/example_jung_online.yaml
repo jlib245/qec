@@ -1,0 +1,56 @@
+# configs/example_jung_online.yaml
+# online mode: 데이터셋 파일 없이 시뮬레이터에서 실시간 생성
+code:
+  name: "surface_code"
+  distance: 5
+  rounds: 5
+
+noise:
+  p_gate: [0.007, 0.008, 0.009, 0.010, 0.011, 0.012, 0.013, 0.014, 0.015]
+  p_meas: 0.001
+  p_corr: 0.0
+  p_leak: 0.002
+
+training:
+  data_mode: "online"
+  # train_path / val_path 불필요 (online 모드)
+  train_steps: 500000   # epoch당 생성할 훈련 샘플 수
+  val_steps: 10000     # epoch당 생성할 검증 샘플 수
+  chunk_size: 10000    # 시뮬레이터 1회 호출당 생성 샷 수
+  epochs: 200
+  batch_size: 1024
+
+  seed: 42
+  num_workers: 4
+  prefetch_factor: 2
+  pin_memory: true
+
+  optimizer:
+    name: "Adam"
+    kwargs:
+      lr: 0.001
+  criterion:
+    name: "bce_with_logits"
+    kwargs: {}
+  output_dir: "./results/experiment_online"
+  early_stopping:
+    patience: 15
+  scheduler:
+    name: "ReduceLROnPlateau"
+    kwargs:
+      mode: "min"
+      factor: 0.5
+      patience: 2
+
+model:
+  name: "jung_cnn_low"
+  use_erasures: true
+  kwargs: {}
+
+decoder:
+  name: "neural_decoder"
+  weight_path: ""
+  model_kwargs: {}
+
+simulation:
+  shots: 10000

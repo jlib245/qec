@@ -47,7 +47,8 @@ class Evaluator:
 
     def evaluate_simulator(self, decoder: BaseDecoder, simulator, shots: int) -> dict:
         """[Pipeline 용] 시뮬레이터와 디코더를 이용한 최종 논리적 에러율(LER) 벤치마크."""
-        syndromes, observables, erasures = simulator.generate_data(shots=shots)
+        raw = simulator.generate_data(shots=shots)
+        syndromes, observables, erasures = raw['syndromes'], raw['observables'], raw['erasures']
 
         pred_std = decoder.decode_batch(syndromes, erasures=None)
         err_std = np.sum(np.any(pred_std != observables, axis=1))

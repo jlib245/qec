@@ -12,6 +12,7 @@ noise:
 
 model:
   name: "jung_cnn_low"
+  use_erasures: true
   kwargs: {}
 
 training:

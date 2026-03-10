@@ -13,6 +13,7 @@ class CircuitNoiseSimulator:
         self.noise = noise_params
         # Stim의 빠른 샘플러 컴파일
         self.sampler = circuit.compile_detector_sampler()
+        self._circuit = circuit
 
     def generate_data(self, shots: int):
         """
@@ -21,7 +22,9 @@ class CircuitNoiseSimulator:
         """
         # 1. 베이스라인 샘플링 (파울리 노이즈 및 상관 관계 노이즈는 이미 회로에 반영됨)
         # syndromes: (shots, num_detectors) 크기의 boolean 배열
-        syndromes, observables = self.sampler.sample(
+        stim_seed = int(np.random.randint(2 ** 31))
+        sampler = self._circuit.compile_detector_sampler(seed=stim_seed)
+        syndromes, observables = sampler.sample(
             shots=shots, separate_observables=True
         )
         
@@ -40,12 +43,15 @@ class CircuitNoiseSimulator:
             
             # 누설된 부분(erasure_masks == True)의 신드롬만 무작위로 뒤집음(XOR)
             syndromes = np.where(erasure_masks, syndromes ^ random_noise, syndromes)
-
-        # 최종적으로 3가지 데이터를 반환
-        # 1) syndromes: 누설까지 반영된 최종 에러 신호
-        # 2) observables: 우리가 지켜야 할 진짜 논리값 (정답 라벨)
-        # 3) erasure_masks: 어디서 누설이 났는지 알려주는 1/0 맵 (딥러닝 모델의 추가 입력으로 사용!)
-        return syndromes, observables, erasure_masks
+                    # 최종적으로 3가지 데이터를 반환
+            # 1) syndromes: 누설까지 반영된 최종 에러 신호
+            # 2) observables: 우리가 지켜야 할 진짜 논리값 (정답 라벨)
+            # 3) erasure_masks: 어디서 누설이 났는지 알려주는 1/0 맵 (딥러닝 모델의 추가 입력으로 사용!)
+        return {
+            'syndromes': syndromes,
+            'observables': observables,
+            'erasures': erasure_masks,
+        }
     
 class SimulatorPool:
     """여러 노이즈 환경의 시뮬레이터를 묶어서 관리하는 풀(Pool) 클래스"""

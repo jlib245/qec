@@ -24,9 +24,7 @@ class NoiseParams:
 @dataclass
 class TrainingConfig:
     # --- 필수 필드 ---
-    data_mode: str
-    train_path: str
-    val_path: str
+    data_mode: str       # "offline" | "online"
     epochs: int
     batch_size: int
     output_dir: str
@@ -35,19 +33,25 @@ class TrainingConfig:
     early_stopping: Dict[str, int]
 
     # --- 선택 필드 (기본값 있음) ---
+    # offline 전용
+    train_path: Optional[str] = None
+    val_path: Optional[str] = None
+    # online 전용 (epoch당 생성할 샘플 수)
     train_steps: Optional[int] = None
     val_steps: Optional[int] = None
-    chunk_size: int = 10000
+    chunk_size: int = 10000          # 시뮬레이터 1회 호출당 생성 샷 수
+    # 공통
     num_workers: int = 4
     prefetch_factor: int = 2
     pin_memory: bool = True
-    use_erasures: bool = True
     scheduler: Optional[Dict[str, Any]] = None
+    seed: Optional[int] = None
 
 
 @dataclass
 class ModelConfig:
     name: str
+    use_erasures: bool = True
     kwargs: Dict[str, Any] = field(default_factory=dict)
     preprocessor: Dict[str, Any] = field(default_factory=dict)
 

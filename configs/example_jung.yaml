@@ -12,15 +12,16 @@ noise:
   p_leak: 0.002
 
 training:
-  data_mode: "online"
-  train_path: "./data/train_data.npz"    # 확장자는 자동(.npz)으로 붙으므로 제외
-  val_path: "./data/val_data.npz"
+  data_mode: "offline"
+  train_path: "datasets/jung/train.npz"
+  val_path: "datasets/jung/val.npz"
   train_steps: 10000
   val_steps: 2000
   epochs: 50
   batch_size: 1024
   chunk_size: 50000
 
+  seed: 42                # 재현성을 위한 랜덤 시드 (null이면 비고정)
   num_workers: 4          # 0으로 두면 메인 프로세스만 사용, 4~8 권장
   prefetch_factor: 2      # num_workers가 1 이상일 때, 워커당 미리 만들어둘 배치의 수
   pin_memory: true        # 데이터를 GPU로 보낼 때 속도 향상 (True 권장)
@@ -43,7 +44,8 @@ training:
         patience: 2
 
 model:
-  name: "jung_cnn_low"  # 레지스트리에 등록된 모델 이름
+  name: "jung_cnn_low"
+  use_erasures: true
   kwargs: {}
 
 decoder:
