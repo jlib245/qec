@@ -1,39 +1,58 @@
-# configs/experiment_jung_cnn.yaml
+# configs/experiment_jung_cnn_low.yaml
 code:
   name: "surface_code"
   distance: 3
   rounds: 3
+
 noise:
   p_gate: 0.001
   p_meas: 0.001
   p_corr: 0.0
   p_leak: 0.0
+
 model:
   name: "jung_cnn_low"
-  kwargs:
-    n_filters: 64 # 모델 내부 상수가 아닌 여기서 제어
+  kwargs: {}
+
 training:
   data_mode: "offline"
-  train_path: "data/train.pt"
-  val_path: "data/val.pt"
+  train_path: "datasets/train.npz"
+  val_path: "datasets/val.npz"
   epochs: 100
-  batch_size: 32
-  criterion: # Loss 함수 레지스트리 설정
-    name: "bce_with_logits"
-    kwargs:
-      reduction: "mean"
+  batch_size: 256
+  output_dir: "experiments/jung_cnn_low"
+  use_erasures: true
+
+  train_steps: null
+  val_steps: null
+  chunk_size: 10000
+  num_workers: 4
+  prefetch_factor: 2
+  pin_memory: true
+
   optimizer:
     name: "Adam"
     kwargs:
       lr: 0.001
+
+  criterion:
+    name: "bce_with_logits"
+    kwargs:
+      reduction: "mean"
+
+  scheduler:
+    name: "ReduceLROnPlateau"
+    kwargs:
+      mode: "min"
+      factor: 0.5
+      patience: 5
+
   early_stopping:
     patience: 10
-  save_path: "best_model.pth"
-  output_dir: "experiments/run_1"
-  train_steps: null
-  val_steps: null
+
 decoder:
-  name: "neural"
-  weight_path: "best_model.pth"
+  name: "mwpm"
+  weight_path: ""
+
 simulation:
   shots: 10000

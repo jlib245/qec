@@ -22,7 +22,12 @@ class JungCNN_Low(BaseQECModel):
             nn.ReLU(inplace=True)
         )
         
-        flatten_dim = n_filters * grid_h * grid_w
+        # Conv2d(kernel_size=2, padding=1)은 출력 크기를 H+1로 바꾸므로
+        # 더미 텐서로 실제 flatten 크기를 동적으로 계산합니다.
+        with torch.no_grad():
+            dummy = torch.zeros(1, in_channels, grid_h, grid_w)
+            flatten_dim = self.features(dummy).view(1, -1).size(1)
+
         self.classifier = nn.Sequential(
             nn.Linear(flatten_dim, 50),
             nn.ReLU(inplace=True),

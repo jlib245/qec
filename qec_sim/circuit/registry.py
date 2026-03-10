@@ -1,20 +1,11 @@
 # qec_sim/circuit/registry.py
+from qec_sim.core.registry import Registry
 
-_BUILDER_REGISTRY = {}
+builder_registry: Registry = Registry("circuit_builder")
 
-def register_builder(name):
-    """빌더 클래스를 레지스트리에 등록하는 데코레이터"""
-    def decorator(cls):
-        _BUILDER_REGISTRY[name] = cls
-        return cls
-    return decorator
+register_builder = builder_registry.register
 
-def build_circuit(name, code_config, noise_config, **kwargs):
-    """이름으로 등록된 빌더를 찾아 인스턴스를 생성하는 함수"""
-    if name not in _BUILDER_REGISTRY:
-        raise ValueError(f"'{name}' 이름의 회로 빌더가 등록되지 않았습니다. "
-                         f"사용 가능한 빌더: {list(_BUILDER_REGISTRY.keys())}")
-    
-    builder_class = _BUILDER_REGISTRY[name]
-    # 넘겨주는 키워드 인자 이름을 builder.py에 맞춰 code_params, noise_params로 변경.
-    return builder_class(code_params=code_config, noise_params=noise_config, **kwargs)
+
+def build_circuit(name: str, code_config, noise_config, **kwargs):
+    """이름으로 빌더를 찾아 인스턴스를 생성합니다."""
+    return builder_registry.get(name)(code_params=code_config, noise_params=noise_config, **kwargs)

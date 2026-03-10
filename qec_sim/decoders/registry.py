@@ -1,19 +1,12 @@
 # qec_sim/decoders/registry.py
-from typing import Type
-from .base import BaseDecoder
+from qec_sim.core.registry import Registry
+from qec_sim.decoders.base import BaseDecoder
 
-DECODER_REGISTRY = {}
+decoder_registry: Registry[BaseDecoder] = Registry("decoder")
 
-def register_decoder(name: str):
-    """디코더를 레지스트리에 등록하는 데코레이터"""
-    def wrapper(cls: Type[BaseDecoder]):
-        DECODER_REGISTRY[name] = cls
-        return cls
-    return wrapper
+register_decoder = decoder_registry.register
+get_decoder_class = decoder_registry.get
 
+# 하위 호환 유지 (build_decoder 헬퍼)
 def build_decoder(name: str, **kwargs) -> BaseDecoder:
-    """이름표를 기반으로 디코더 인스턴스를 생성하여 반환합니다."""
-    if name not in DECODER_REGISTRY:
-        available = list(DECODER_REGISTRY.keys())
-        raise ValueError(f"Decoder '{name}'이(가) 등록되지 않았습니다! 사용 가능한 디코더: {available}")
-    return DECODER_REGISTRY[name](**kwargs)
+    return decoder_registry.get(name)(**kwargs)
