@@ -1,6 +1,7 @@
 # qec_sim/models/baseline.py
 import torch.nn as nn
-from .registry import register_model
+from qec_sim.models.registry import register_model  # 정확한 파일명(.registry) 명시!
+from qec_sim.core.interfaces import BaseQECModel
 
 @register_model("erasure_mlp")
 class ErasureAwareMLP(nn.Module):

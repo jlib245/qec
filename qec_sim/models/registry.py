@@ -1,27 +1,17 @@
-# qec_sim/models/registry.py
-import inspect
-import torch.nn as nn
-from typing import Type
+from typing import Type, Dict
+from qec_sim.core.interfaces import BaseQECModel
 
-MODEL_REGISTRY = {}
+_MODELS: Dict[str, Type[BaseQECModel]] = {}
 
 def register_model(name: str):
-    def wrapper(cls: Type[nn.Module]):
-        MODEL_REGISTRY[name] = cls
+    """모델 클래스 위에 @register_model("이름") 형태로 붙이는 데코레이터"""
+    def wrapper(cls: Type[BaseQECModel]):
+        _MODELS[name] = cls
         return cls
     return wrapper
 
-def build_model(name: str, **kwargs) -> nn.Module:
-    """이름표를 기반으로 모델 인스턴스를 생성하여 반환합니다."""
-    if name not in MODEL_REGISTRY:
-        available = list(MODEL_REGISTRY.keys())
-        raise ValueError(f"Model '{name}'이(가) 등록되지 않았습니다! 사용 가능한 모델: {available}")
-    
-    cls = MODEL_REGISTRY[name]
-    
-    # 클래스의 __init__ 시그니처를 분석하여 요구하는 파라미터만 필터링
-    sig = inspect.signature(cls)
-    filtered_kwargs = {k: v for k, v in kwargs.items() if k in sig.parameters}
-    
-    # 걸러진 파라미터만 모델에 전달
-    return cls(**filtered_kwargs)
+def get_model_class(name: str) -> Type[BaseQECModel]:
+    """이름으로 등록된 모델 '클래스' 자체를 반환합니다."""
+    if name not in _MODELS:
+        raise KeyError(f"모델 '{name}'을 찾을 수 없습니다. 등록된 모델: {list(_MODELS.keys())}")
+    return _MODELS[name]

@@ -1,59 +1,74 @@
-# qec_sim/data/preprocessors.py
-from abc import ABC, abstractmethod
 import torch
-from .registry import register_preprocessor
+from typing import Dict, Any, List
+from qec_sim.core.interfaces import BasePreprocessor
+from qec_sim.data.registry import register_preprocessor
 
-class BasePreprocessor(ABC):
-    @abstractmethod
-    def process(self, syndromes: torch.Tensor, erasures: torch.Tensor = None) -> torch.Tensor:
-        pass
-
-@register_preprocessor("flat_preprocessor")
-class FlatPreprocessor(BasePreprocessor):
-    def __init__(self, num_detectors: int, use_erasures: bool):
+@register_preprocessor("spatial_grid")
+class SpatialGridPreprocessor(BasePreprocessor):
+    def __init__(self, detector_coords: dict, num_detectors: int, use_erasures: bool = True):
+        self.num_detectors = num_detectors
         self.use_erasures = use_erasures
-        self.output_dim = (num_detectors * 2) if use_erasures else num_detectors
-
-    def process(self, syndromes, erasures=None) -> torch.Tensor:
-        # numpy.ndarray로 들어올 경우 Tensor로 변환
-        if not isinstance(syndromes, torch.Tensor):
-            syndromes = torch.tensor(syndromes, dtype=torch.float32)
-        if erasures is not None and not isinstance(erasures, torch.Tensor):
-            erasures = torch.tensor(erasures, dtype=torch.float32)
-
+        
+        # 1. 상위 계층(데이터셋)에 요구할 데이터 키 명시
+        self._required_keys = ["syndromes"]
         if self.use_erasures:
-            if erasures is None:
-                erasures = torch.zeros_like(syndromes)
-            x = torch.stack([syndromes, erasures], dim=1)
-        else:
-            x = syndromes.unsqueeze(1) # (Batch, 1, Detectors)
-            
-        return x.float()
+            self._required_keys.append("erasures")
 
-@register_preprocessor("grid_preprocessor")
-class GridPreprocessor(BasePreprocessor):
-    def __init__(self, detector_coords: dict, use_erasures: bool, x_step: float, y_step: float):
-        self.use_erasures = use_erasures
-        # (중략: 기존 H, W, 채널 수 계산 및 매핑 로직 유지)
-
-    def process(self, syndromes, erasures=None) -> torch.Tensor:
-        if not isinstance(syndromes, torch.Tensor):
-            syndromes = torch.tensor(syndromes, dtype=torch.float32)
-            
-        batch_size = syndromes.shape[0]
-        device = syndromes.device
+        # 2. Grid 차원 계산
+        all_x = [c[0] for c in detector_coords.values()]
+        all_y = [c[1] for c in detector_coords.values()]
+        all_t = [c[2] for c in detector_coords.values()] if len(list(detector_coords.values())[0]) > 2 else [0]
         
-        grid = torch.full((batch_size, self.out_channels, self.grid_h, self.grid_w), 
-                          -0.5, dtype=torch.float32, device=device)
+        min_x, min_y = min(all_x), min(all_y)
+        self.grid_w = int((max(all_x) - min_x) // 2.0) + 1
+        self.grid_h = int((max(all_y) - min_y) // 2.0) + 1
         
-        if self.use_erasures and erasures is None:
-            erasures = torch.zeros_like(syndromes)
-        elif erasures is not None and not isinstance(erasures, torch.Tensor):
-            erasures = torch.tensor(erasures, dtype=torch.float32, device=device)
-            
-        for (det_idx, t_idx, row, col) in self.mapping:
-            grid[:, t_idx, row, col] = syndromes[:, det_idx]
-            if self.use_erasures:
-                grid[:, self.input_depth + t_idx, row, col] = erasures[:, det_idx]
+        unique_t = sorted(list(set(all_t)))
+        self.input_depth = len(unique_t)
+        self.out_channels = self.input_depth * (2 if self.use_erasures else 1)
+        
+        # 3. GPU 인덱싱용 텐서 캐싱
+        det_indices, c_indices, h_indices, w_indices = [], [], [], []
+        t_map = {t: i for i, t in enumerate(unique_t)}
+        for det_idx in range(num_detectors):
+            if det_idx in detector_coords:
+                x, y, t = detector_coords[det_idx][0], detector_coords[det_idx][1], (detector_coords[det_idx][2] if len(detector_coords[det_idx]) > 2 else 0)
+                det_indices.append(det_idx)
+                c_indices.append(t_map[t])
+                h_indices.append(int((y - min_y) // 2.0))
+                w_indices.append(int((x - min_x) // 2.0))
                 
+        self.det_idx = torch.tensor(det_indices, dtype=torch.long)
+        self.c_idx = torch.tensor(c_indices, dtype=torch.long)
+        self.h_idx = torch.tensor(h_indices, dtype=torch.long)
+        self.w_idx = torch.tensor(w_indices, dtype=torch.long)
+
+    @property
+    def required_data_keys(self) -> List[str]:
+        return self._required_keys
+
+    def get_model_kwargs(self) -> Dict[str, Any]:
+        return {"in_channels": self.out_channels, "grid_h": self.grid_h, "grid_w": self.grid_w}
+
+    def cpu_transform(self, raw_sample: Dict[str, Any]) -> Dict[str, Any]:
+        # CNN 전처리는 가벼우므로 CPU 통과
+        return raw_sample
+
+    def gpu_transform(self, batch_data: Dict[str, torch.Tensor]) -> torch.Tensor:
+        batch_syn = batch_data["syndromes"]
+        batch_size = batch_syn.size(0)
+        device = batch_syn.device
+        
+        if self.det_idx.device != device:
+            self.det_idx, self.c_idx, self.h_idx, self.w_idx = (
+                self.det_idx.to(device), self.c_idx.to(device), 
+                self.h_idx.to(device), self.w_idx.to(device)
+            )
+
+        grid = torch.full((batch_size, self.out_channels, self.grid_h, self.grid_w), -0.5, device=device)
+        grid[:, self.c_idx, self.h_idx, self.w_idx] = batch_syn[:, self.det_idx]
+        
+        if self.use_erasures and "erasures" in batch_data:
+            grid[:, self.c_idx + self.input_depth, self.h_idx, self.w_idx] = batch_data["erasures"][:, self.det_idx]
+            
         return grid
