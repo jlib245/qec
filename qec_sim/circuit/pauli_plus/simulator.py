@@ -26,6 +26,8 @@ from qec_sim.core.interfaces import BaseSimulator
 from qec_sim.config.schema import CodeParams, PauliPlusNoiseParams
 from .frame import PauliFrame
 from .channels import depolarize1, depolarize2, bitflip
+from .leakage import (apply_cz_leakage, apply_heating,
+                      remove_leakage, apply_passive_decay)
 
 
 class PauliPlusSimulator(BaseSimulator):
@@ -79,11 +81,20 @@ class PauliPlusSimulator(BaseSimulator):
                 frame.apply_h(q)
                 depolarize1(frame, q, noise.p_1q, rng)
 
-            # 2. CX 4 sub-layers (+ 2q noise per gate, idle on inactive qubits)
+            # 2. CX 4 sub-layers (+ 2q noise per gate, leakage, idle)
             for layer in layout.cx_layers:
                 for (ctrl, tgt) in layer:
                     frame.apply_cx(ctrl, tgt)
                     depolarize2(frame, ctrl, tgt, noise.p_2q, rng)
+                    # Phase 2: CZ dephasing leakage
+                    apply_cz_leakage(frame, ctrl, tgt,
+                                     noise.cz_dephasing_leakage, rng)
+                    # Phase 2: heating per gate
+                    _gate_time_us = 0.05  # 50 ns CZ gate (typical)
+                    apply_heating(frame, ctrl, noise.heating_rate_per_us,
+                                  _gate_time_us, rng)
+                    apply_heating(frame, tgt,  noise.heating_rate_per_us,
+                                  _gate_time_us, rng)
                 active = set(q for pair in layer for q in pair)
                 for q in layout.all_qubits:
                     if q not in active:
@@ -97,17 +108,26 @@ class PauliPlusSimulator(BaseSimulator):
             # 4. Data qubit resonator idle (during ancilla measurement)
             for q in layout.data_qubits:
                 depolarize1(frame, q, noise.p_resonator_idle, rng)
+                # Phase 2: passive T1 decay during measurement window
+                apply_passive_decay(frame, [q], noise.passive_decay_T1_us,
+                                    t_us=0.5, rng=rng)
 
-            # 5. Measure ancilla in Z (X-ancilla는 H 이미 적용됨 → Z basis로 측정)
+            # 5. Measure ancilla in Z
             meas = np.zeros((shots, layout.n_ancilla), dtype=bool)
             for i, q in enumerate(layout.ancilla_order):
                 bitflip(frame, q, noise.p_meas, rng)
-                meas[:, i] = frame.measure_z(q)
+                meas[:, i] = frame.measure_z(q, rng)
 
             ancilla_meas.append(meas)
 
-            # 6. 리셋 ancilla (+ 리셋 노이즈)
+            # 6. 리셋 ancilla + leakage removal
             _reset(frame, layout.ancilla_order, noise.p_reset, rng)
+            if noise.leakage_removal_after_reset:
+                remove_leakage(frame, layout.ancilla_order, rng)
+
+            # Phase 2: data qubit leakage removal per cycle
+            if noise.data_qubit_leakage_removal_per_cycle:
+                remove_leakage(frame, layout.data_qubits, rng)
 
         # --- detection events ---
         # Round 1: Z-ancilla only (4 detectors, 첫 라운드는 이전 측정 없음)
@@ -127,7 +147,7 @@ class PauliPlusSimulator(BaseSimulator):
         data_meas = np.zeros((shots, layout.n_data), dtype=bool)
         for i, q in enumerate(layout.data_order):
             bitflip(frame, q, noise.p_meas, rng)
-            data_meas[:, i] = frame.measure_z(q)
+            data_meas[:, i] = frame.measure_z(q, rng)
 
         # 최종 round data + 마지막 ancilla 조합 detectors
         final_dets = layout.compute_final_detectors(data_meas, ancilla_meas[-1])

@@ -14,15 +14,22 @@ def _rng(rng):
     return rng if rng is not None else np.random.default_rng()
 
 
-def depolarize1(frame: PauliFrame, qubit: int, p: float, rng=None):
-    """Single-qubit depolarizing: applies X/Y/Z each with prob p/3."""
+def depolarize1(frame: PauliFrame, qubit: int, p: float, rng=None,
+                mask: np.ndarray | None = None):
+    """
+    Single-qubit depolarizing: X/Y/Z each with prob p/3.
+    mask: (n_shots,) bool — None이면 전체 shots에 적용.
+    """
     if p <= 0:
         return
     rng = _rng(rng)
-    r = rng.random(frame.n_shots)
+    n = frame.n_shots
+    r = rng.random(n)
     pauli = np.where(r < p / 3, X,
             np.where(r < 2 * p / 3, Y,
             np.where(r < p, Z, I))).astype(np.int8)
+    if mask is not None:
+        pauli[~mask] = I
     frame.apply_single_pauli(qubit, pauli)
 
 

@@ -25,29 +25,36 @@ class NoiseParams:
 class PauliPlusNoiseParams:
     """
     Pauli+ 시뮬레이터용 노이즈 파라미터.
-    모든 노이즈 강도는 단일 p의 배수로 결정됩니다 (SI1000 convention).
 
-      2q gate (CZ):        p
-      1q gate (H):         p / 10
-      idle:                p / 10
-      measurement:         5 * p
-      reset:               2 * p
-      resonator idle:      2 * p
+    SI1000 gate noise (단일 p 기반, Table S1):
+      2q gate (CZ):      p
+      1q gate (H/idle):  p / 10
+      measurement:       5p
+      reset:             2p
+      resonator idle:    2p
+
+    Leakage 파라미터 (p와 독립적인 절대값, 디바이스 특성화 데이터 기반):
+      cz_dephasing_leakage: CZ 게이트 중 |2⟩ 전이 확률 (경로 A)
+      heating_rate_per_us:  열적 여기율 [1/μs] (경로 B)
+      passive_decay_T1_us:  Leaked qubit T1 [μs]
+
+    I/Q 파라미터 (Phase 2, soft measurement용):
+      snr:              신호 대 잡음비
+      t_meas_over_T1:   측정 시간 / T1
     """
+    # SI1000 gate noise
     p: Union[float, List[float]]
 
-    # Phase 2
-    p_leak: Union[float, List[float]] = 0.0
-    cz_dephasing_leakage: float = 5e-5
-    heating_rate_per_us: float = 1 / 700
-    passive_decay_T1_us: float = 20.0
+    # Leakage (Phase 2) — p와 독립적인 절대값, 기본값 0 (noiseless)
+    cz_dephasing_leakage: float = 0.0        # 논문값: 2e-4 (경로 A: 8e-4 × 0.25)
+    heating_rate_per_us: float = 0.0         # 논문값: 1/700 (경로 B)
+    passive_decay_T1_us: float = 0.0         # 논문값: 20.0
     leakage_removal_after_reset: bool = True
     data_qubit_leakage_removal_per_cycle: bool = True
 
-    # Phase 3
-    snr: float = 10.0
-    t_meas_over_T1: float = 0.01
-    crosstalk_leakage_scale: float = 0.25
+    # I/Q noise (Phase 2), 기본값 0 (noiseless)
+    snr: float = 0.0                         # 논문값: 10.0
+    t_meas_over_T1: float = 0.0             # 논문값: 0.01
 
     @property
     def p_2q(self) -> float:
