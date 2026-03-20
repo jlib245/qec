@@ -56,6 +56,11 @@ class PauliPlusNoiseParams:
     snr: float = 0.0                         # 논문값: 10.0
     t_meas_over_T1: float = 0.0             # 논문값: 0.01
 
+    # Crosstalk (Phase 3), 기본값 0 (noiseless)
+    p_crosstalk: float = 0.0                 # 논문값: 9.5e-4 (Nature 614 Table I)
+    crosstalk_alpha: float = 0.25            # Bausch 스케일: 0.25, 원래: 1.0
+    crosstalk_leakage_rate: float = 0.0      # crosstalk 유래 leakage 확률
+
     @property
     def p_2q(self) -> float:
         return float(self.p) if not isinstance(self.p, list) else self.p[0]

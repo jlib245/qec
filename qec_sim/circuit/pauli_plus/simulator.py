@@ -30,6 +30,7 @@ from .leakage import (apply_cz_leakage, apply_heating,
                       remove_leakage, apply_passive_decay)
 from .iq_noise import (get_true_z_state, sample_iq, compute_posterior,
                        soft_xor_consecutive, threshold)
+from .crosstalk import apply_crosstalk
 
 
 class PauliPlusSimulator(BaseSimulator):
@@ -85,7 +86,7 @@ class PauliPlusSimulator(BaseSimulator):
                 frame.apply_h(q)
                 depolarize1(frame, q, noise.p_1q, rng)
 
-            # 2. CX 4 sub-layers (+ 2q noise per gate, leakage, idle)
+            # 2. CX 4 sub-layers (+ 2q noise per gate, leakage, idle, crosstalk)
             for layer in layout.cx_layers:
                 for (ctrl, tgt) in layer:
                     frame.apply_cx(ctrl, tgt)
@@ -103,6 +104,12 @@ class PauliPlusSimulator(BaseSimulator):
                 for q in layout.all_qubits:
                     if q not in active:
                         depolarize1(frame, q, noise.p_idle, rng)
+                # Phase 3: crosstalk between simultaneously executed CZ pairs
+                apply_crosstalk(frame, layer,
+                                p_crosstalk=noise.p_crosstalk,
+                                alpha=noise.crosstalk_alpha,
+                                crosstalk_leakage_rate=noise.crosstalk_leakage_rate,
+                                rng=rng)
 
             # 3. H on X-ancilla (+ 1q gate noise)
             for q in layout.x_ancilla:
