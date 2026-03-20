@@ -69,21 +69,40 @@ class EvaluationPipeline:
         if decoder_name == "neural_decoder":
             neural_decoder = self._build_neural_decoder()
 
-        # 2. 노이즈별 평가
+        # 2. 시뮬레이터 목록 구성 (backend에 따라 분기)
+        from qec_sim.trainer.factory import _build_simulator_pool
+        backend = self.config.simulation.get('backend', 'stim')
         results = []
-        noise_configs = self.config.get_expanded_noise_configs()
         model_dir = os.path.dirname(self.model_path) if self.model_path else "."
-        ler_label = "LER"
-        print(f"{'p_gate':>8} {'p_meas':>8} {'p_leak':>8} | {ler_label:>12}")
+
+        if backend == 'stim':
+            noise_configs = self.config.get_expanded_noise_configs()
+            simulators_with_labels = []
+            for noise_cfg in noise_configs:
+                circuit = build_circuit(
+                    self.config.code.name, self.config.code, noise_cfg
+                ).build()
+                sim = CircuitNoiseSimulator(circuit, noise_cfg)
+                label = {"p_gate": noise_cfg.p_gate, "p_meas": noise_cfg.p_meas,
+                         "p_corr": noise_cfg.p_corr, "p_leak": noise_cfg.p_leak}
+                simulators_with_labels.append((sim, label, circuit if decoder_name == "mwpm" else None))
+        else:
+            # pauli_plus: 단일 시뮬레이터
+            pp_cfg = self.config.simulation.get('pauli_plus', {})
+            from qec_sim.config.schema import PauliPlusNoiseParams
+            from qec_sim.circuit.pauli_plus import PauliPlusSimulator
+            noise = PauliPlusNoiseParams(**pp_cfg)
+            sim = PauliPlusSimulator(self.config.code, noise)
+            label = {"p": noise.p, "cz_dephasing_leakage": noise.cz_dephasing_leakage,
+                     "heating_rate_per_us": noise.heating_rate_per_us}
+            simulators_with_labels = [(sim, label, None)]
+
+        print(f"{'backend':>12}: {backend}")
+        print(f"{'LER':>12}")
         print("-" * 45)
 
-        for noise_cfg in noise_configs:
-            circuit = build_circuit(
-                self.config.code.name, self.config.code, noise_cfg
-            ).build()
-            simulator = CircuitNoiseSimulator(circuit, noise_cfg)
-
-            raw = simulator.generate_data(shots=shots)
+        for sim, label, circuit in simulators_with_labels:
+            raw = sim.generate_data(shots=shots)
             syndromes, observables, erasures = raw['syndromes'], raw['observables'], raw['erasures']
 
             if decoder_name == "neural_decoder":
@@ -93,6 +112,8 @@ class EvaluationPipeline:
                     batch_size=4096,
                 )
             elif decoder_name == "mwpm":
+                if circuit is None:
+                    raise ValueError("mwpm decoder는 stim backend에서만 지원됩니다.")
                 dem = circuit.detector_error_model(decompose_errors=True)
                 mwpm = ErasureMWPM(error_model=dem)
                 preds = mwpm.decode_batch(syndromes, erasures=erasures)
@@ -101,18 +122,10 @@ class EvaluationPipeline:
 
             ler = float(np.mean(np.any(preds != observables, axis=1)))
 
-            row = {
-                "p_gate":      noise_cfg.p_gate,
-                "p_meas":      noise_cfg.p_meas,
-                "p_corr":      noise_cfg.p_corr,
-                "p_leak":      noise_cfg.p_leak,
-                "shots":       shots,
-                "decoder":     decoder_name,
-                "ler":         ler,
-            }
+            row = {**label, "shots": shots, "decoder": decoder_name, "ler": ler}
             results.append(row)
-            print(f"{noise_cfg.p_gate:>8.4f} {noise_cfg.p_meas:>8.4f} {noise_cfg.p_leak:>8.4f} "
-                  f"| {ler:>12.4%}")
+            label_str = ", ".join(f"{k}={v}" for k, v in label.items())
+            print(f"{label_str} | LER: {ler:.4%}")
 
         # 3. 저장
         self._save_results(results, model_dir, timestamp)
