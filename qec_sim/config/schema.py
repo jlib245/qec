@@ -61,6 +61,10 @@ class PauliPlusNoiseParams:
     crosstalk_alpha: float = 0.25            # Bausch 스케일: 0.25, 원래: 1.0
     crosstalk_leakage_rate: float = 0.0      # crosstalk 유래 leakage 확률
 
+    # 개별 강도 override (None이면 p 기반 derived 값 사용, 검증/디버깅용)
+    p_idle_override: float | None = None
+    p_resonator_idle_override: float | None = None
+
     @property
     def p_2q(self) -> float:
         return float(self.p) if not isinstance(self.p, list) else self.p[0]
@@ -79,11 +83,11 @@ class PauliPlusNoiseParams:
 
     @property
     def p_idle(self) -> float:
-        return self.p_2q / 10
+        return self.p_idle_override if self.p_idle_override is not None else self.p_2q / 10
 
     @property
     def p_resonator_idle(self) -> float:
-        return self.p_2q * 2
+        return self.p_resonator_idle_override if self.p_resonator_idle_override is not None else self.p_2q * 2
 
 
 @dataclass
