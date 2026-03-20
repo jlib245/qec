@@ -28,6 +28,8 @@ from .frame import PauliFrame
 from .channels import depolarize1, depolarize2, bitflip
 from .leakage import (apply_cz_leakage, apply_heating,
                       remove_leakage, apply_passive_decay)
+from .iq_noise import (get_true_z_state, sample_iq, compute_posterior,
+                       soft_xor_consecutive, threshold)
 
 
 class PauliPlusSimulator(BaseSimulator):
@@ -72,8 +74,10 @@ class PauliPlusSimulator(BaseSimulator):
         # --- 초기화: 모든 큐빗 리셋 + 리셋 노이즈 ---
         _reset(frame, layout.all_qubits, noise.p_reset, rng)
 
-        # 측정 기록: ancilla_meas[r] = (shots, n_ancilla) bool
-        ancilla_meas = []
+        # 측정 기록
+        ancilla_meas     = []                    # hard: (shots, n_ancilla) bool
+        soft_meas_rounds = []                    # soft: (shots, n_ancilla) float, IQ on시만
+        use_iq           = noise.snr > 0
 
         for r in range(rounds):
             # 1. H on X-ancilla (+ 1q gate noise)
@@ -112,13 +116,25 @@ class PauliPlusSimulator(BaseSimulator):
                 apply_passive_decay(frame, [q], noise.passive_decay_T1_us,
                                     t_us=0.5, rng=rng)
 
-            # 5. Measure ancilla in Z
-            meas = np.zeros((shots, layout.n_ancilla), dtype=bool)
+            # 5. Measure ancilla in Z + IQ noise (soft measurement)
+            meas      = np.zeros((shots, layout.n_ancilla), dtype=bool)
+            post1_meas = np.zeros((shots, layout.n_ancilla), dtype=float)
+            post2_meas = np.zeros((shots, layout.n_ancilla), dtype=float)
+
+            use_iq = noise.snr > 0
             for i, q in enumerate(layout.ancilla_order):
+                if use_iq:
+                    true_state = get_true_z_state(frame, q)
                 bitflip(frame, q, noise.p_meas, rng)
                 meas[:, i] = frame.measure_z(q, rng)
+                if use_iq:
+                    z = sample_iq(true_state, noise.snr, noise.t_meas_over_T1, rng)
+                    post1_meas[:, i], post2_meas[:, i] = compute_posterior(
+                        z, noise.snr, noise.t_meas_over_T1)
 
             ancilla_meas.append(meas)
+            if use_iq:
+                soft_meas_rounds.append(post1_meas)
 
             # 6. 리셋 ancilla + leakage removal
             _reset(frame, layout.ancilla_order, noise.p_reset, rng)
@@ -143,11 +159,14 @@ class PauliPlusSimulator(BaseSimulator):
         for r in range(1, rounds):
             det_list.append(ancilla_meas[r] ^ ancilla_meas[r - 1])  # (shots, 8)
 
-        # --- 최종 data qubit 측정 ---
+        # --- 최종 data qubit 측정 (항상 hard — label 누출 방지) ---
         data_meas = np.zeros((shots, layout.n_data), dtype=bool)
         for i, q in enumerate(layout.data_order):
+            if use_iq:
+                true_state = get_true_z_state(frame, q)
             bitflip(frame, q, noise.p_meas, rng)
             data_meas[:, i] = frame.measure_z(q, rng)
+            # 최종 라운드: soft여도 threshold → binary (논문 핵심 제약)
 
         # 최종 round data + 마지막 ancilla 조합 detectors
         final_dets = layout.compute_final_detectors(data_meas, ancilla_meas[-1])
@@ -162,12 +181,18 @@ class PauliPlusSimulator(BaseSimulator):
 
         erasures = np.zeros_like(syndromes, dtype=bool)
 
+        # soft_measurements: (shots, rounds, n_ancilla) float — IQ on일 때만
+        if use_iq and soft_meas_rounds:
+            soft_measurements = np.stack(soft_meas_rounds, axis=1)
+        else:
+            soft_measurements = None
+
         return {
-            'syndromes':        syndromes,
-            'observables':      logical,
-            'erasures':         erasures,
-            'soft_measurements': None,   # Phase 2
-            'leakage_flags':     None,   # Phase 2
+            'syndromes':         syndromes,
+            'observables':       logical,
+            'erasures':          erasures,
+            'soft_measurements': soft_measurements,
+            'leakage_flags':     None,   # Phase 3
         }
 
 
