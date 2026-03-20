@@ -27,6 +27,29 @@ PAULI_MUL = _PM
 
 I, X, Y, Z, L2, L3 = 0, 1, 2, 3, 4, 5
 
+# CX conjugation table: CX_TABLE[p_control, p_target] = (new_control, new_target)
+# Derived from Heisenberg picture: X_c→X_cX_t, Z_t→Z_cZ_t
+_CX_RAW = [
+    # (I,I),(X,I),(Y,I),(Z,I)
+    (I,I),(X,X),(Y,X),(Z,I),
+    # (I,X),(X,X),(Y,X),(Z,X)
+    (I,X),(X,I),(Y,I),(Z,X),
+    # (I,Y),(X,Y),(Y,Y),(Z,Y)
+    (Z,Y),(Y,Z),(X,Z),(I,Y),
+    # (I,Z),(X,Z),(Y,Z),(Z,Z)
+    (Z,Z),(Y,Y),(X,Y),(I,Z),
+]
+_CX_C = np.array([v[0] for v in _CX_RAW], dtype=np.int8).reshape(4, 4)
+_CX_T = np.array([v[1] for v in _CX_RAW], dtype=np.int8).reshape(4, 4)
+
+class _CXTable:
+    """Allows CX_TABLE[fc, ft] → (new_c, new_t) via numpy fancy indexing."""
+    def __getitem__(self, key):
+        fc, ft = key
+        return _CX_C[fc, ft], _CX_T[fc, ft]
+
+CX_TABLE = _CXTable()
+
 
 class PauliFrame:
     """
@@ -77,6 +100,28 @@ class PauliFrame:
         new_f = np.where(f == Z, I, np.where(f == Y, X, f))
         self.frame[:, qubit] = new_f
         return outcome
+
+    def apply_h(self, qubit: int):
+        """H conjugation: X↔Z, Y→Y."""
+        f = self.frame[:, qubit]
+        # X(1)↔Z(3), Y(2)→Y(2), I(0)→I(0)
+        new_f = np.where(f == X, Z, np.where(f == Z, X, f))
+        self.frame[:, qubit] = new_f
+
+    def apply_cx(self, control: int, target: int):
+        """
+        CX (CNOT) Clifford conjugation on the Pauli frame.
+        Rules (Heisenberg): X_c→X_cX_t, Z_t→Z_cZ_t, others unchanged.
+        """
+        fc = self.frame[:, control].copy()
+        ft = self.frame[:, target].copy()
+
+        # X component of control spreads to target
+        # Z component of target spreads to control
+        # Use the precomputed 2-qubit table
+        nc, nt = CX_TABLE[fc, ft]
+        self.frame[:, control] = nc
+        self.frame[:, target] = nt
 
     def copy(self) -> 'PauliFrame':
         pf = PauliFrame(self.n_shots, self.n_qubits)

@@ -22,6 +22,59 @@ class NoiseParams:
 
 
 @dataclass
+class PauliPlusNoiseParams:
+    """
+    Pauli+ 시뮬레이터용 노이즈 파라미터.
+    모든 노이즈 강도는 단일 p의 배수로 결정됩니다 (SI1000 convention).
+
+      2q gate (CZ):        p
+      1q gate (H):         p / 10
+      idle:                p / 10
+      measurement:         5 * p
+      reset:               2 * p
+      resonator idle:      2 * p
+    """
+    p: Union[float, List[float]]
+
+    # Phase 2
+    p_leak: Union[float, List[float]] = 0.0
+    cz_dephasing_leakage: float = 5e-5
+    heating_rate_per_us: float = 1 / 700
+    passive_decay_T1_us: float = 20.0
+    leakage_removal_after_reset: bool = True
+    data_qubit_leakage_removal_per_cycle: bool = True
+
+    # Phase 3
+    snr: float = 10.0
+    t_meas_over_T1: float = 0.01
+    crosstalk_leakage_scale: float = 0.25
+
+    @property
+    def p_2q(self) -> float:
+        return float(self.p) if not isinstance(self.p, list) else self.p[0]
+
+    @property
+    def p_1q(self) -> float:
+        return self.p_2q / 10
+
+    @property
+    def p_meas(self) -> float:
+        return self.p_2q * 5
+
+    @property
+    def p_reset(self) -> float:
+        return self.p_2q * 2
+
+    @property
+    def p_idle(self) -> float:
+        return self.p_2q / 10
+
+    @property
+    def p_resonator_idle(self) -> float:
+        return self.p_2q * 2
+
+
+@dataclass
 class TrainingConfig:
     # --- 필수 필드 ---
     data_mode: str       # "offline" | "online"
