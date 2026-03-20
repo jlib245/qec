@@ -1,5 +1,5 @@
 # qec_sim/trainer/factory.py
-from qec_sim.config.schema import ExperimentConfig
+from qec_sim.config.schema import ExperimentConfig, PauliPlusNoiseParams
 from qec_sim.circuit.registry import build_circuit
 from qec_sim.circuit.simulator import SimulatorPool
 from qec_sim.models.wrapper import PreprocessorWrapper
@@ -35,7 +35,7 @@ class ComponentFactory:
         # 3. 데이터 모듈 생성 (data_mode에 따라 전략 선택)
         data_mode = config.training.data_mode
         if data_mode == "online":
-            simulator_pool = SimulatorPool.from_stim(config.code, noise_configs)
+            simulator_pool = _build_simulator_pool(config)
             strategy = OnlineDataStrategy(
                 config=config,
                 simulator_pool=simulator_pool,
@@ -65,3 +65,26 @@ class ComponentFactory:
         wrapped_model = PreprocessorWrapper(core_model, preprocessor)
 
         return datamodule, wrapped_model
+
+
+def _build_simulator_pool(config: ExperimentConfig) -> SimulatorPool:
+    """
+    simulation.backend 키에 따라 SimulatorPool 생성.
+      stim (기본값): 기존 Stim 기반 CircuitNoiseSimulator
+      pauli_plus:    PauliPlusSimulator (Phase 1+2)
+    """
+    backend = config.simulation.get('backend', 'stim')
+
+    if backend == 'stim':
+        noise_configs = config.get_expanded_noise_configs()
+        return SimulatorPool.from_stim(config.code, noise_configs)
+
+    elif backend == 'pauli_plus':
+        from qec_sim.circuit.pauli_plus import PauliPlusSimulator
+        pp_cfg = config.simulation.get('pauli_plus', {})
+        noise = PauliPlusNoiseParams(**pp_cfg)
+        sim = PauliPlusSimulator(config.code, noise)
+        return SimulatorPool([sim])
+
+    else:
+        raise ValueError(f"알 수 없는 simulation backend: '{backend}'. 'stim' 또는 'pauli_plus'를 사용하세요.")
