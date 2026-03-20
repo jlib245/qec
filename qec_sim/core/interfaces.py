@@ -3,6 +3,7 @@ import torch.nn as nn
 from abc import ABC, abstractmethod
 from typing import Tuple, Dict, Any, List
 from torch.utils.data import DataLoader
+import numpy as np
 
 class BaseQECModel(nn.Module, ABC):
     """[Level 1] 순수 코어 모델 (수학적 연산만 수행)"""
@@ -37,6 +38,25 @@ class BasePreprocessor(ABC):
     @abstractmethod
     def gpu_transform(self, batch_data: Dict[str, torch.Tensor]) -> torch.Tensor:
         """[GPU] 래퍼 내부에서 수행될 초고속 텐서 변환. 반환값은 코어 모델의 입력이 됨."""
+        pass
+
+
+class BaseSimulator(ABC):
+    """시뮬레이터 공통 인터페이스. CircuitNoiseSimulator와 PauliPlusSimulator가 구현."""
+
+    @property
+    @abstractmethod
+    def num_detectors(self) -> int:
+        pass
+
+    @property
+    @abstractmethod
+    def num_observables(self) -> int:
+        pass
+
+    @abstractmethod
+    def generate_data(self, shots: int) -> Dict[str, np.ndarray]:
+        """{'syndromes', 'observables', 'erasures', ...} 형태의 dict 반환"""
         pass
 
 

@@ -35,7 +35,7 @@ class ComponentFactory:
         # 3. 데이터 모듈 생성 (data_mode에 따라 전략 선택)
         data_mode = config.training.data_mode
         if data_mode == "online":
-            simulator_pool = SimulatorPool(config.code, noise_configs)
+            simulator_pool = SimulatorPool.from_stim(config.code, noise_configs)
             strategy = OnlineDataStrategy(
                 config=config,
                 simulator_pool=simulator_pool,

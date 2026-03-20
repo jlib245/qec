@@ -6,14 +6,22 @@ import random
 
 from qec_sim.config.schema import NoiseParams
 from qec_sim.circuit.registry import build_circuit
+from qec_sim.core.interfaces import BaseSimulator
 
-class CircuitNoiseSimulator:
+class CircuitNoiseSimulator(BaseSimulator):
     def __init__(self, circuit: stim.Circuit, noise_params: NoiseParams):
-        self.circuit = circuit
-        self.noise = noise_params
-        # Stim의 빠른 샘플러 컴파일
-        self.sampler = circuit.compile_detector_sampler()
         self._circuit = circuit
+        self.noise = noise_params
+        self._num_detectors = circuit.num_detectors
+        self._num_observables = circuit.num_observables
+
+    @property
+    def num_detectors(self) -> int:
+        return self._num_detectors
+
+    @property
+    def num_observables(self) -> int:
+        return self._num_observables
 
     def generate_data(self, shots: int):
         """
@@ -55,21 +63,25 @@ class CircuitNoiseSimulator:
     
 class SimulatorPool:
     """여러 노이즈 환경의 시뮬레이터를 묶어서 관리하는 풀(Pool) 클래스"""
-    def __init__(self, code_config, noise_configs):
-        self.simulators = []
-        self.noise_configs = noise_configs if isinstance(noise_configs, list) else [noise_configs]
-        
-        for n_config in self.noise_configs:
-            builder = build_circuit(code_config.name, code_config, n_config)
-            self.simulators.append(CircuitNoiseSimulator(builder.build(), n_config))
-            
-        # 메타데이터 접근용 (첫 번째 시뮬레이터 기준)
-        self.base_circuit = self.simulators[0].circuit
-        self.num_detectors = self.base_circuit.num_detectors
-        self.num_observables = self.base_circuit.num_observables
 
-    def get_random_simulator(self) -> CircuitNoiseSimulator:
+    def __init__(self, simulators: list):
+        assert len(simulators) > 0
+        self.simulators = simulators
+        self.num_detectors = simulators[0].num_detectors
+        self.num_observables = simulators[0].num_observables
+
+    @classmethod
+    def from_stim(cls, code_config, noise_configs) -> 'SimulatorPool':
+        """기존 Stim 기반 시뮬레이터 풀 생성 (하위 호환용)"""
+        noise_configs = noise_configs if isinstance(noise_configs, list) else [noise_configs]
+        simulators = []
+        for n_config in noise_configs:
+            builder = build_circuit(code_config.name, code_config, n_config)
+            simulators.append(CircuitNoiseSimulator(builder.build(), n_config))
+        return cls(simulators)
+
+    def get_random_simulator(self):
         return random.choice(self.simulators)
-        
-    def get_all_simulators(self) -> list[CircuitNoiseSimulator]:
+
+    def get_all_simulators(self) -> list:
         return self.simulators
