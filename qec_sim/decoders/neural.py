@@ -19,13 +19,19 @@ class NeuralDecoder(BaseDecoder):
         self.model.eval()
         self.device = next(self.model.parameters()).device
 
-    def decode_batch(self, syndromes: np.ndarray, erasures: np.ndarray = None) -> np.ndarray:
-        batch_dict = {
-            'syndromes': torch.tensor(syndromes, dtype=torch.float32).to(self.device)
-        }
-        if erasures is not None:
-            batch_dict['erasures'] = torch.tensor(erasures, dtype=torch.float32).to(self.device)
+    def decode_batch(self, syndromes: np.ndarray, erasures: np.ndarray = None, batch_size: int = 4096) -> np.ndarray:
+        n = len(syndromes)
+        all_preds = []
+        for start in range(0, n, batch_size):
+            end = min(start + batch_size, n)
+            batch_dict = {
+                'syndromes': torch.tensor(syndromes[start:end], dtype=torch.float32).to(self.device)
+            }
+            if erasures is not None:
+                batch_dict['erasures'] = torch.tensor(erasures[start:end], dtype=torch.float32).to(self.device)
 
-        with torch.no_grad():
-            logits = self.model(batch_dict)
-            return (logits > 0).cpu().numpy().astype(bool)
+            with torch.no_grad():
+                logits = self.model(batch_dict)
+                all_preds.append((logits > 0).cpu().numpy().astype(bool))
+
+        return np.concatenate(all_preds, axis=0)

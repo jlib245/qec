@@ -54,4 +54,4 @@ decoder:
   model_kwargs: {}
 
 simulation:
-  shots: 10000
+  shots: 100000

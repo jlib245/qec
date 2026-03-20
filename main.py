@@ -20,8 +20,6 @@ def main():
         TrainingPipeline(config_path=args.config).run()
 
     elif args.mode == "eval":
-        if args.model is None:
-            parser.error("--mode eval 에는 --model 경로가 필요합니다.")
         EvaluationPipeline(
             config_path=args.config,
             model_path=args.model,

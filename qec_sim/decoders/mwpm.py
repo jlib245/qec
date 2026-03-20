@@ -1,7 +1,9 @@
 # qec_sim/decoders/mwpm.py
+import os
 import pymatching
 import stim
 import numpy as np
+from concurrent.futures import ThreadPoolExecutor
 
 from .base import BaseDecoder
 from .registry import register_decoder
@@ -20,7 +22,7 @@ class ErasureMWPM(BaseDecoder):
 
         has_erasure = np.any(erasures, axis=1)  # (n_shots,) bool
 
-        # 전체 결과 배열 초기화 (shape 추론: 한 샘플 디코딩으로 확인)
+        # 전체 결과 배열 초기화
         sample_pred = self.base_matching.decode(syndromes[0])
         predictions = np.zeros((len(syndromes), len(sample_pred)), dtype=bool)
 
@@ -29,17 +31,26 @@ class ErasureMWPM(BaseDecoder):
         if len(no_era_idx) > 0:
             predictions[no_era_idx] = self.base_matching.decode_batch(syndromes[no_era_idx])
 
-        # erasure 있는 샷: 개별 처리 (가중치 수정 필요)
-        for i in np.where(has_erasure)[0]:
-            temp_matching = pymatching.Matching.from_detector_error_model(self.error_model)
+        # erasure 있는 샷: ThreadPoolExecutor로 병렬 처리
+        # (pymatching은 C++ 라이브러리로 GIL을 해제하므로 스레드 병렬화 효과 있음)
+        era_indices = np.where(has_erasure)[0]
+        if len(era_indices) == 0:
+            return predictions
+
+        error_model = self.error_model
+
+        def _decode_one(i):
+            tmp = pymatching.Matching.from_detector_error_model(error_model)
             for d in np.where(erasures[i])[0]:
-                temp_matching.add_boundary_edge(
-                    int(d),
-                    fault_ids=set(),
-                    weight=0.0,
-                    error_probability=1.0,
-                    merge_strategy="replace",
+                tmp.add_boundary_edge(
+                    int(d), fault_ids=set(), weight=0.0,
+                    error_probability=1.0, merge_strategy="replace",
                 )
-            predictions[i] = temp_matching.decode(syndromes[i])
+            return tmp.decode(syndromes[i])
+
+        n_workers = min(os.cpu_count() or 4, len(era_indices))
+        with ThreadPoolExecutor(max_workers=n_workers) as ex:
+            for i, pred in zip(era_indices, ex.map(_decode_one, era_indices)):
+                predictions[i] = pred
 
         return predictions
