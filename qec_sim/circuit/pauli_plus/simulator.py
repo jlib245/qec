@@ -62,14 +62,7 @@ class PauliPlusSimulator(BaseSimulator):
 
     def get_ancilla_coordinates(self) -> dict:
         """ancilla_order 기준 인덱스 → (x, y) 좌표 반환. SoftGridPreprocessor 초기화에 사용."""
-        import stim as _stim
-        circ = _stim.Circuit.generated(
-            "surface_code:rotated_memory_z",
-            distance=self.code.distance, rounds=self.code.rounds,
-            after_clifford_depolarization=0,
-            before_measure_flip_probability=0,
-        )
-        coords = circ.get_final_qubit_coordinates()
+        coords = self._layout.qubit_coords
         return {i: (coords[q][0], coords[q][1])
                 for i, q in enumerate(self._layout.ancilla_order)}
 
@@ -141,7 +134,6 @@ class PauliPlusSimulator(BaseSimulator):
             post1_meas = np.zeros((shots, layout.n_ancilla), dtype=float)
             post2_meas = np.zeros((shots, layout.n_ancilla), dtype=float)
 
-            use_iq = noise.snr > 0
             for i, q in enumerate(layout.ancilla_order):
                 if use_iq:
                     true_state = get_true_z_state(frame, q)
@@ -249,6 +241,7 @@ class _SurfaceCodeLayout:
         )
         self.n_qubits = circ.num_qubits
         coords = circ.get_final_qubit_coordinates()
+        self.qubit_coords = coords  # get_ancilla_coordinates() 재사용
 
         # --- qubit 분류 ---
         # data: both x,y odd;  ancilla: at least one even
