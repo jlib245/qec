@@ -51,8 +51,13 @@ def depolarize2(frame: PauliFrame, q0: int, q1: int, p: float, rng=None):
     f0 = frame.frame[mask, q0]
     f1 = frame.frame[mask, q1]
     from .frame import PAULI_MUL
-    frame.frame[mask, q0] = PAULI_MUL[f0, p0]
-    frame.frame[mask, q1] = PAULI_MUL[f1, p1]
+    # leaked 큐빗(state >= 4)은 Pauli 연산 스킵 — leakage subspace에 Pauli 미작용
+    leaked0 = f0 >= 4
+    leaked1 = f1 >= 4
+    new_f0 = PAULI_MUL[np.where(leaked0, 0, f0), p0]
+    new_f1 = PAULI_MUL[np.where(leaked1, 0, f1), p1]
+    frame.frame[mask, q0] = np.where(leaked0, f0, new_f0)
+    frame.frame[mask, q1] = np.where(leaked1, f1, new_f1)
 
 
 def bitflip(frame: PauliFrame, qubit: int, p: float, rng=None):

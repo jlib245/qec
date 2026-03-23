@@ -38,3 +38,9 @@ class JungCNN_Low(BaseQECModel):
         x = self.features(x)
         x = x.view(x.size(0), -1)
         return self.classifier(x)
+
+
+@register_model("jung_cnn_low_soft")
+class JungCNN_Low_Soft(JungCNN_Low):
+    """JungCNN_Low와 동일한 구조, soft_grid preprocessor 사용 (IQ soft measurement 입력)."""
+    REQUIRED_PREPROCESSOR = "soft_grid"

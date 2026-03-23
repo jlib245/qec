@@ -24,18 +24,16 @@ class ComponentFactory:
         core_model_cls = get_model_class(config.model.name)
         preprocessor_name = getattr(core_model_cls, 'REQUIRED_PREPROCESSOR', 'flat')
 
-        # 2. 전처리기 생성
-        preprocessor_cls = get_preprocessor_class(preprocessor_name)
-        preprocessor = preprocessor_cls(
-            detector_coords=circuit.get_detector_coordinates(),
-            num_detectors=circuit.num_detectors,
-            use_erasures=config.model.use_erasures,
-        )
-
-        # 3. 데이터 모듈 생성 (data_mode에 따라 전략 선택)
+        # 2. simulator_pool 미리 빌드 (online 모드 또는 preprocessor가 필요로 할 때)
         data_mode = config.training.data_mode
+        simulator_pool = _build_simulator_pool(config) if data_mode == "online" else None
+
+        # 3. 전처리기 생성 (각 클래스가 from_config로 필요한 정보 직접 추출)
+        preprocessor_cls = get_preprocessor_class(preprocessor_name)
+        preprocessor = preprocessor_cls.from_config(config, circuit, simulator_pool)
+
+        # 4. 데이터 모듈 생성 (data_mode에 따라 전략 선택)
         if data_mode == "online":
-            simulator_pool = _build_simulator_pool(config)
             strategy = OnlineDataStrategy(
                 config=config,
                 simulator_pool=simulator_pool,
@@ -53,7 +51,7 @@ class ComponentFactory:
 
         datamodule = QECDataModule(strategy=strategy)
 
-        # 4. 코어 모델 생성 (전처리기의 출력 규격 주입)
+        # 5. 코어 모델 생성 (전처리기의 출력 규격 주입)
         model_kwargs = preprocessor.get_model_kwargs()
         model_kwargs["num_observables"] = circuit.num_observables
         model_kwargs["code_distance"] = config.code.distance

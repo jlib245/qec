@@ -60,6 +60,19 @@ class PauliPlusSimulator(BaseSimulator):
     def generate_data(self, shots: int) -> dict:
         return self._run(shots)
 
+    def get_ancilla_coordinates(self) -> dict:
+        """ancilla_order 기준 인덱스 → (x, y) 좌표 반환. SoftGridPreprocessor 초기화에 사용."""
+        import stim as _stim
+        circ = _stim.Circuit.generated(
+            "surface_code:rotated_memory_z",
+            distance=self.code.distance, rounds=self.code.rounds,
+            after_clifford_depolarization=0,
+            before_measure_flip_probability=0,
+        )
+        coords = circ.get_final_qubit_coordinates()
+        return {i: (coords[q][0], coords[q][1])
+                for i, q in enumerate(self._layout.ancilla_order)}
+
     # ------------------------------------------------------------------ #
     # Simulation                                                           #
     # ------------------------------------------------------------------ #

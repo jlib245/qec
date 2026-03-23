@@ -18,7 +18,13 @@ class BaseQECModel(nn.Module, ABC):
 
 class BasePreprocessor(ABC):
     """[Level 2] 전처리기 (데이터 공급과 가공 정책을 통제)"""
-    
+
+    @classmethod
+    @abstractmethod
+    def from_config(cls, config, circuit, simulator_pool=None) -> "BasePreprocessor":
+        """팩토리가 전처리기를 생성할 때 호출. 각 서브클래스가 필요한 정보를 직접 추출."""
+        pass
+
     @property
     @abstractmethod
     def required_data_keys(self) -> List[str]:
