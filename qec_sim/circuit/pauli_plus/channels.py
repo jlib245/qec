@@ -127,7 +127,6 @@ def depolarize2(frame: PauliFrame, q0: int, q1: int, p: float, rng=None):
 
     f0 = frame.frame[mask, q0]
     f1 = frame.frame[mask, q1]
-    from .frame import PAULI_MUL
     # leaked 큐빗(state >= 4)은 Pauli 연산 스킵 — leakage subspace에 Pauli 미작용
     leaked0 = f0 >= 4
     leaked1 = f1 >= 4

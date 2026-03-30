@@ -90,18 +90,21 @@ class PauliPlusSimulator(BaseSimulator):
         ancilla_meas     = []                    # hard: (shots, n_ancilla) bool
         soft_meas_rounds = []                    # soft: (shots, n_ancilla) float, IQ on시만
         use_iq           = noise.snr > 0
+        post1_meas       = None
 
         # 배치 연산에 쓸 상수 참조
-        pm         = PAULI_MUL
-        pp         = _PAULI_PAIRS
-        cx_c       = _CX_C
-        cx_t       = _CX_T
-        x_anc      = layout.x_ancilla_arr
-        anc_order  = layout.ancilla_order_arr
-        data_arr   = layout.data_arr
-        n_x        = len(x_anc)
-        n_anc      = layout.n_ancilla
-        n_data     = layout.n_data
+        pm        = PAULI_MUL
+        pp        = _PAULI_PAIRS
+        cx_c      = _CX_C
+        cx_t      = _CX_T
+        x_anc     = layout.x_ancilla_arr
+        anc_order = layout.ancilla_order_arr
+        data_arr  = layout.data_arr
+        n_x       = len(x_anc)
+        n_anc     = layout.n_ancilla
+        n_data    = layout.n_data
+        p_decay   = 1.0 - np.exp(-noise.t_meas_over_T1) if noise.t_meas_over_T1 > 0 else 0.0
+        p_heat    = noise.heating_rate_per_us * 0.05
 
         for r in range(rounds):
             # 1. H on X-ancilla (배치) + 1q gate noise (배치)
@@ -137,7 +140,6 @@ class PauliPlusSimulator(BaseSimulator):
                         pm,
                     )
                 if noise.heating_rate_per_us > 0:
-                    p_heat   = noise.heating_rate_per_us * 0.05
                     active_q = layout.active_per_layer[li]
                     _apply_heating_nb(frame.frame, active_q, p_heat,
                                       rng.random((shots, len(active_q))))
@@ -172,12 +174,7 @@ class PauliPlusSimulator(BaseSimulator):
                                         t_us=0.5, rng=rng)
 
             # 5. Measure ancilla in Z + IQ noise
-            post1_meas = np.zeros((shots, n_anc), dtype=float)
-            post2_meas = np.zeros((shots, n_anc), dtype=float)
-
             if use_iq:
-                # true_state 배치 추출 → IQ 샘플 → posterior (모두 배치)
-                p_decay    = 1.0 - np.exp(-noise.t_meas_over_T1) if noise.t_meas_over_T1 > 0 else 0.0
                 true_states = _get_true_z_state_batch_nb(frame.frame, anc_order)
                 z_batch     = _sample_iq_batch_nb(
                     true_states, noise.snr, p_decay,
@@ -185,19 +182,12 @@ class PauliPlusSimulator(BaseSimulator):
                     rng.random((shots, n_anc)),
                 )
                 post1_meas, _ = _compute_posterior_batch_nb(z_batch, noise.snr, p_decay)
-                # bitflip + measure (배치)
-                if noise.p_meas > 0:
-                    bitflip_batch_nb(frame.frame, anc_order, noise.p_meas,
-                                     rng.random((shots, n_anc)), pm)
-                meas = measure_z_batch_nb(frame.frame, anc_order,
-                                          rng.random((shots, n_anc)))
-            else:
-                # bitflip (배치) → measure (배치)
-                if noise.p_meas > 0:
-                    bitflip_batch_nb(frame.frame, anc_order, noise.p_meas,
-                                     rng.random((shots, n_anc)), pm)
-                meas = measure_z_batch_nb(frame.frame, anc_order,
-                                          rng.random((shots, n_anc)))
+
+            if noise.p_meas > 0:
+                bitflip_batch_nb(frame.frame, anc_order, noise.p_meas,
+                                 rng.random((shots, n_anc)), pm)
+            meas = measure_z_batch_nb(frame.frame, anc_order,
+                                      rng.random((shots, n_anc)))
 
             ancilla_meas.append(meas)
             if use_iq:
