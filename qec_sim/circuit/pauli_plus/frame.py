@@ -7,6 +7,7 @@ States per qubit (integer encoding):
 """
 
 import numpy as np
+import numba
 
 # Pauli multiplication table: PAULI_MUL[a, b] = a * b  (ignoring phase)
 # I=0, X=1, Y=2, Z=3
@@ -156,3 +157,63 @@ class PauliFrame:
         pf = PauliFrame(self.n_shots, self.n_qubits)
         pf.frame = self.frame.copy()
         return pf
+
+
+# ------------------------------------------------------------------ #
+# Numba-JIT batch operations (module-level, cache=True)              #
+# ------------------------------------------------------------------ #
+
+@numba.njit(cache=True)
+def apply_h_batch_nb(frame, qubits):
+    """H 게이트를 여러 qubit에 일괄 적용. frame: (shots, n_qubits) int8"""
+    n_shots = frame.shape[0]
+    for qi in range(len(qubits)):
+        q = qubits[qi]
+        for i in range(n_shots):
+            f = frame[i, q]
+            if f == 1:        # X → Z
+                frame[i, q] = 3
+            elif f == 3:      # Z → X
+                frame[i, q] = 1
+            # Y→Y, leaked→leaked: 변화 없음
+
+
+@numba.njit(cache=True)
+def apply_cx_layer_nb(frame, ctrls, tgts, cx_c, cx_t):
+    """한 CX sub-layer의 모든 게이트를 일괄 적용."""
+    n_shots = frame.shape[0]
+    for pi in range(len(ctrls)):
+        c = ctrls[pi]
+        t = tgts[pi]
+        for i in range(n_shots):
+            fc = frame[i, c]
+            ft = frame[i, t]
+            if fc < 4 and ft < 4:
+                frame[i, c] = cx_c[fc, ft]
+                frame[i, t] = cx_t[fc, ft]
+
+
+@numba.njit(cache=True)
+def measure_z_batch_nb(frame, qubits, leak_rand):
+    """
+    여러 qubit을 Z-basis로 일괄 측정.
+    leak_rand: (shots, n_qubits) float — leaked qubit 무작위 결과용.
+    반환: (shots, n_qubits) bool
+    """
+    n_shots = frame.shape[0]
+    n_q = len(qubits)
+    outcomes = np.zeros((n_shots, n_q), dtype=np.bool_)
+    for qi in range(n_q):
+        q = qubits[qi]
+        for i in range(n_shots):
+            f = frame[i, q]
+            if f >= 4:                       # leaked → 50/50
+                outcomes[i, qi] = leak_rand[i, qi] < 0.5
+                frame[i, q] = 0              # I로 리셋
+            else:
+                outcomes[i, qi] = (f == 1) or (f == 2)   # X or Y
+                if f == 1:                   # X → I
+                    frame[i, q] = 0
+                elif f == 2:                 # Y → Z
+                    frame[i, q] = 3
+    return outcomes

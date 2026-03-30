@@ -24,12 +24,17 @@ import stim
 
 from qec_sim.core.interfaces import BaseSimulator
 from qec_sim.config.schema import CodeParams, PauliPlusNoiseParams
-from .frame import PauliFrame
-from .channels import depolarize1, depolarize2, bitflip
+from .frame import PauliFrame, _CX_C, _CX_T, apply_h_batch_nb, apply_cx_layer_nb, measure_z_batch_nb
+from .channels import (depolarize1, depolarize2, bitflip,
+                       depolarize1_batch_nb, depolarize2_layer_nb, bitflip_batch_nb,
+                       PAULI_MUL, _PAULI_PAIRS)
 from .leakage import (apply_cz_leakage, apply_heating,
-                      remove_leakage, apply_passive_decay)
+                      remove_leakage, apply_passive_decay,
+                      _apply_cz_leakage_layer_nb, _apply_heating_nb)
 from .iq_noise import (get_true_z_state, sample_iq, compute_posterior,
-                       soft_xor_consecutive, threshold)
+                       soft_xor_consecutive, threshold,
+                       _get_true_z_state_batch_nb, _sample_iq_batch_nb,
+                       _compute_posterior_batch_nb)
 from .crosstalk import apply_crosstalk
 
 
@@ -86,63 +91,113 @@ class PauliPlusSimulator(BaseSimulator):
         soft_meas_rounds = []                    # soft: (shots, n_ancilla) float, IQ on시만
         use_iq           = noise.snr > 0
 
-        for r in range(rounds):
-            # 1. H on X-ancilla (+ 1q gate noise)
-            for q in layout.x_ancilla:
-                frame.apply_h(q)
-                depolarize1(frame, q, noise.p_1q, rng)
+        # 배치 연산에 쓸 상수 참조
+        pm         = PAULI_MUL
+        pp         = _PAULI_PAIRS
+        cx_c       = _CX_C
+        cx_t       = _CX_T
+        x_anc      = layout.x_ancilla_arr
+        anc_order  = layout.ancilla_order_arr
+        data_arr   = layout.data_arr
+        n_x        = len(x_anc)
+        n_anc      = layout.n_ancilla
+        n_data     = layout.n_data
 
-            # 2. CX 4 sub-layers (+ 2q noise per gate, leakage, idle, crosstalk)
-            for layer in layout.cx_layers:
-                for (ctrl, tgt) in layer:
-                    frame.apply_cx(ctrl, tgt)
-                    depolarize2(frame, ctrl, tgt, noise.p_2q, rng)
-                    # Phase 2: CZ dephasing leakage
-                    apply_cz_leakage(frame, ctrl, tgt,
-                                     noise.cz_dephasing_leakage, rng)
-                    # Phase 2: heating per gate
-                    _gate_time_us = 0.05  # 50 ns CZ gate (typical)
-                    apply_heating(frame, ctrl, noise.heating_rate_per_us,
-                                  _gate_time_us, rng)
-                    apply_heating(frame, tgt,  noise.heating_rate_per_us,
-                                  _gate_time_us, rng)
-                active = set(q for pair in layer for q in pair)
-                for q in layout.all_qubits:
-                    if q not in active:
-                        depolarize1(frame, q, noise.p_idle, rng)
-                # Phase 3: crosstalk between simultaneously executed CZ pairs
-                apply_crosstalk(frame, layer,
+        for r in range(rounds):
+            # 1. H on X-ancilla (배치) + 1q gate noise (배치)
+            apply_h_batch_nb(frame.frame, x_anc)
+            if noise.p_1q > 0:
+                depolarize1_batch_nb(frame.frame, x_anc, noise.p_1q,
+                                     rng.random((shots, n_x)), pm)
+
+            # 2. CX 4 sub-layers
+            for li, (ctrls, tgts) in enumerate(layout.cx_layer_arrays):
+                n_pairs = len(ctrls)
+
+                # CX Clifford (배치)
+                apply_cx_layer_nb(frame.frame, ctrls, tgts, cx_c, cx_t)
+
+                # 2q depolarizing (배치)
+                if noise.p_2q > 0:
+                    depolarize2_layer_nb(
+                        frame.frame, ctrls, tgts, noise.p_2q,
+                        rng.integers(0, 15, size=(shots, n_pairs), dtype=np.int32),
+                        rng.random((shots, n_pairs)),
+                        pp, pm,
+                    )
+
+                # Phase 2: leakage + heating (배치)
+                if noise.cz_dephasing_leakage > 0:
+                    _apply_cz_leakage_layer_nb(
+                        frame.frame, ctrls, tgts, noise.cz_dephasing_leakage,
+                        rng.random((shots, n_pairs)),   # rand_ctrl
+                        rng.random((shots, n_pairs)),   # rand_tgt
+                        rng.random((shots, n_pairs)),   # rand_dep_ctrl
+                        rng.random((shots, n_pairs)),   # rand_dep_tgt
+                        pm,
+                    )
+                if noise.heating_rate_per_us > 0:
+                    p_heat   = noise.heating_rate_per_us * 0.05
+                    active_q = layout.active_per_layer[li]
+                    _apply_heating_nb(frame.frame, active_q, p_heat,
+                                      rng.random((shots, len(active_q))))
+
+                # idle noise (배치)
+                idle = layout.idle_per_layer[li]
+                if noise.p_idle > 0 and len(idle) > 0:
+                    depolarize1_batch_nb(frame.frame, idle, noise.p_idle,
+                                         rng.random((shots, len(idle))), pm)
+
+                # Phase 3: crosstalk (그대로 유지)
+                apply_crosstalk(frame, layout.cx_layers[li],
                                 p_crosstalk=noise.p_crosstalk,
                                 alpha=noise.crosstalk_alpha,
                                 crosstalk_leakage_rate=noise.crosstalk_leakage_rate,
                                 rng=rng)
 
-            # 3. H on X-ancilla (+ 1q gate noise)
-            for q in layout.x_ancilla:
-                frame.apply_h(q)
-                depolarize1(frame, q, noise.p_1q, rng)
+            # 3. H on X-ancilla (배치) + 1q gate noise (배치)
+            apply_h_batch_nb(frame.frame, x_anc)
+            if noise.p_1q > 0:
+                depolarize1_batch_nb(frame.frame, x_anc, noise.p_1q,
+                                     rng.random((shots, n_x)), pm)
 
-            # 4. Data qubit resonator idle (during ancilla measurement)
-            for q in layout.data_qubits:
-                depolarize1(frame, q, noise.p_resonator_idle, rng)
-                # Phase 2: passive T1 decay during measurement window
-                apply_passive_decay(frame, [q], noise.passive_decay_T1_us,
-                                    t_us=0.5, rng=rng)
+            # 4. Data qubit resonator idle (배치)
+            if noise.p_resonator_idle > 0:
+                depolarize1_batch_nb(frame.frame, data_arr, noise.p_resonator_idle,
+                                     rng.random((shots, n_data)), pm)
+            # Phase 2: passive T1 decay (per qubit — 그대로 유지)
+            if noise.passive_decay_T1_us > 0:
+                for q in layout.data_qubits:
+                    apply_passive_decay(frame, [q], noise.passive_decay_T1_us,
+                                        t_us=0.5, rng=rng)
 
-            # 5. Measure ancilla in Z + IQ noise (soft measurement)
-            meas      = np.zeros((shots, layout.n_ancilla), dtype=bool)
-            post1_meas = np.zeros((shots, layout.n_ancilla), dtype=float)
-            post2_meas = np.zeros((shots, layout.n_ancilla), dtype=float)
+            # 5. Measure ancilla in Z + IQ noise
+            post1_meas = np.zeros((shots, n_anc), dtype=float)
+            post2_meas = np.zeros((shots, n_anc), dtype=float)
 
-            for i, q in enumerate(layout.ancilla_order):
-                if use_iq:
-                    true_state = get_true_z_state(frame, q)
-                bitflip(frame, q, noise.p_meas, rng)
-                meas[:, i] = frame.measure_z(q, rng)
-                if use_iq:
-                    z = sample_iq(true_state, noise.snr, noise.t_meas_over_T1, rng)
-                    post1_meas[:, i], post2_meas[:, i] = compute_posterior(
-                        z, noise.snr, noise.t_meas_over_T1)
+            if use_iq:
+                # true_state 배치 추출 → IQ 샘플 → posterior (모두 배치)
+                p_decay    = 1.0 - np.exp(-noise.t_meas_over_T1) if noise.t_meas_over_T1 > 0 else 0.0
+                true_states = _get_true_z_state_batch_nb(frame.frame, anc_order)
+                z_batch     = _sample_iq_batch_nb(
+                    true_states, noise.snr, p_decay,
+                    rng.standard_normal((shots, n_anc)),
+                    rng.random((shots, n_anc)),
+                )
+                post1_meas, _ = _compute_posterior_batch_nb(z_batch, noise.snr, p_decay)
+                # bitflip + measure (배치)
+                if noise.p_meas > 0:
+                    bitflip_batch_nb(frame.frame, anc_order, noise.p_meas,
+                                     rng.random((shots, n_anc)), pm)
+                meas = measure_z_batch_nb(frame.frame, anc_order,
+                                          rng.random((shots, n_anc)))
+            else:
+                # bitflip (배치) → measure (배치)
+                if noise.p_meas > 0:
+                    bitflip_batch_nb(frame.frame, anc_order, noise.p_meas,
+                                     rng.random((shots, n_anc)), pm)
+                meas = measure_z_batch_nb(frame.frame, anc_order,
+                                          rng.random((shots, n_anc)))
 
             ancilla_meas.append(meas)
             if use_iq:
@@ -172,13 +227,11 @@ class PauliPlusSimulator(BaseSimulator):
             det_list.append(ancilla_meas[r] ^ ancilla_meas[r - 1])  # (shots, 8)
 
         # --- 최종 data qubit 측정 (항상 hard — label 누출 방지) ---
-        data_meas = np.zeros((shots, layout.n_data), dtype=bool)
-        for i, q in enumerate(layout.data_order):
-            if use_iq:
-                true_state = get_true_z_state(frame, q)
-            bitflip(frame, q, noise.p_meas, rng)
-            data_meas[:, i] = frame.measure_z(q, rng)
-            # 최종 라운드: soft여도 threshold → binary (논문 핵심 제약)
+        if noise.p_meas > 0:
+            bitflip_batch_nb(frame.frame, layout.data_arr, noise.p_meas,
+                             rng.random((shots, n_data)), pm)
+        data_meas = measure_z_batch_nb(frame.frame, layout.data_arr,
+                                       rng.random((shots, n_data)))
 
         # 최종 round data + 마지막 ancilla 조합 detectors
         final_dets = layout.compute_final_detectors(data_meas, ancilla_meas[-1])
@@ -290,6 +343,27 @@ class _SurfaceCodeLayout:
         self.num_detectors = len(self.z_ancilla_indices_in_order) \
                            + (rounds - 1) * self.n_ancilla \
                            + len(self._final_det_defs)
+
+        # --- 배치 연산용 numpy 배열 (미리 계산) ---
+        self.x_ancilla_arr    = np.array(x_anc,                dtype=np.int32)
+        self.ancilla_order_arr = np.array(self.ancilla_order,  dtype=np.int32)
+        self.data_arr         = np.array(data,                 dtype=np.int32)
+
+        # CX sub-layer별 (ctrls, tgts) numpy 배열
+        self.cx_layer_arrays = [
+            (np.array([p[0] for p in layer], dtype=np.int32),
+             np.array([p[1] for p in layer], dtype=np.int32))
+            for layer in self.cx_layers
+        ]
+
+        # sub-layer별 idle qubit 배열 + active qubit 배열 (heating용)
+        self.idle_per_layer   = []
+        self.active_per_layer = []
+        for layer in self.cx_layers:
+            active = set(q for pair in layer for q in pair)
+            idle   = [q for q in self.all_qubits if q not in active]
+            self.idle_per_layer.append(np.array(idle, dtype=np.int32))
+            self.active_per_layer.append(np.array(sorted(active), dtype=np.int32))
 
     def compute_final_detectors(self, data_meas: np.ndarray,
                                  last_ancilla_meas: np.ndarray) -> np.ndarray:

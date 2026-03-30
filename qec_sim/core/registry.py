@@ -5,7 +5,9 @@ T = TypeVar('T')
 
 
 class Registry(Generic[T]):
-    """등록(register) + 조회(get) 패턴을 제공하는 범용 레지스트리."""
+    """등록(register) + 조회(get) 패턴을 제공하는 범용 레지스트리.
+        Registry[BaseQECModel], Registry[BasePreprocessor] 등의 타입 인스턴스를 만들기 위함.
+    """
 
     def __init__(self, name: str):
         self._name = name

@@ -5,9 +5,86 @@ Phase 1: depolarizing (1q and 2q), bit/phase flip.
 """
 
 import numpy as np
-from .frame import PauliFrame, I, X, Y, Z
+import numba
+from .frame import PauliFrame, I, X, Y, Z, PAULI_MUL
 
 RNG = np.random.default_rng
+
+# depolarize2용 15개 non-identity 2q Pauli 쌍 (컴파일 시 상수)
+_PAULI_PAIRS = np.array(
+    [(a, b) for a in range(4) for b in range(4) if not (a == 0 and b == 0)],
+    dtype=np.int8,
+)  # (15, 2)
+
+
+# ------------------------------------------------------------------ #
+# Numba-JIT batch noise channels                                      #
+# ------------------------------------------------------------------ #
+
+@numba.njit(cache=True)
+def depolarize1_batch_nb(frame, qubits, p, rand, pm):
+    """
+    1q depolarizing을 여러 qubit에 일괄 적용.
+    rand: (shots, n_qubits) float
+    pm:   PAULI_MUL (4, 4) int8
+    """
+    p3 = p / 3.0
+    n_shots = frame.shape[0]
+    for qi in range(len(qubits)):
+        q = qubits[qi]
+        for i in range(n_shots):
+            r = rand[i, qi]
+            if r < p3:
+                pauli = np.int8(1)    # X
+            elif r < 2.0 * p3:
+                pauli = np.int8(2)    # Y
+            elif r < p:
+                pauli = np.int8(3)    # Z
+            else:
+                continue
+            f = frame[i, q]
+            if f < 4:
+                frame[i, q] = pm[f, pauli]
+
+
+@numba.njit(cache=True)
+def depolarize2_layer_nb(frame, ctrls, tgts, p, rand_which, rand_apply, pauli_pairs, pm):
+    """
+    2q depolarizing을 한 CX sub-layer의 모든 쌍에 일괄 적용.
+    rand_which: (shots, n_pairs) int32 [0, 14]
+    rand_apply: (shots, n_pairs) float
+    """
+    n_shots = frame.shape[0]
+    for pi in range(len(ctrls)):
+        c = ctrls[pi]
+        t = tgts[pi]
+        for i in range(n_shots):
+            if rand_apply[i, pi] < p:
+                which = rand_which[i, pi]
+                p0 = pauli_pairs[which, 0]
+                p1 = pauli_pairs[which, 1]
+                f0 = frame[i, c]
+                f1 = frame[i, t]
+                if f0 < 4:
+                    frame[i, c] = pm[f0, p0]
+                if f1 < 4:
+                    frame[i, t] = pm[f1, p1]
+
+
+@numba.njit(cache=True)
+def bitflip_batch_nb(frame, qubits, p, rand, pm):
+    """
+    bitflip을 여러 qubit에 일괄 적용.
+    rand: (shots, n_qubits) float
+    """
+    n_shots = frame.shape[0]
+    for qi in range(len(qubits)):
+        q = qubits[qi]
+        for i in range(n_shots):
+            if rand[i, qi] < p:
+                f = frame[i, q]
+                if f < 4:
+                    frame[i, q] = pm[f, np.int8(1)]  # X
 
 
 def _rng(rng):

@@ -21,6 +21,7 @@ dependencies = [
     "notebook>=7.5.3",
     "sinter>=1.15.0",
     "dotenv>=0.9.9",
+    "numba>=0.64.0",
 ]
 
 [tool.setuptools.packages.find]
