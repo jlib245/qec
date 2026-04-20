@@ -26,6 +26,7 @@ from .frame import PauliFrame, PAULI_MUL, I, X, Y, Z, L2
 
 # 15개 non-identity 2-qubit Pauli 목록 (각각 (p0, p1) 쌍)
 _PAULIS_2Q = [(a, b) for a in range(4) for b in range(4) if not (a == 0 and b == 0)]
+_PAULIS_2Q_ARR = np.array(_PAULIS_2Q, dtype=np.int8)
 
 # ZZ-dominant 가중치:
 # - ZZ: 가장 높음 (잔여 ZZ coupling)
@@ -90,6 +91,7 @@ def apply_crosstalk(
     alpha: float = 0.25,
     crosstalk_leakage_rate: float = 0.0,
     rng: np.random.Generator | None = None,
+    sim_pairs: list | None = None,
 ):
     """
     하나의 CX sub-layer에 대해 동시 실행 쌍마다 crosstalk 채널 적용.
@@ -100,6 +102,7 @@ def apply_crosstalk(
     p_crosstalk : 쌍당 총 crosstalk 에러율 (기본값 9.5e-4, Nature 614 Table I)
     alpha : 스케일 팩터 (1.0=원래, 0.25=Bausch 논문)
     crosstalk_leakage_rate : 한 게이트 당 crosstalk 유래 leakage 확률
+    sim_pairs : 미리 계산된 동시 실행 쌍 (None이면 매번 계산)
     """
     if rng is None:
         rng = np.random.default_rng()
@@ -108,7 +111,8 @@ def apply_crosstalk(
     if eff_p <= 0 and crosstalk_leakage_rate <= 0:
         return
 
-    sim_pairs = get_simultaneous_pairs(cx_layer)
+    if sim_pairs is None:
+        sim_pairs = get_simultaneous_pairs(cx_layer)
     for (ca, ta, cb, tb) in sim_pairs:
         # --- correlated Pauli 에러 (2개 게이트 큐빗에 각각 적용) ---
         if eff_p > 0:
@@ -138,8 +142,8 @@ def _apply_correlated_pauli2(
     u = rng.random(trigger.sum())
     idx = np.searchsorted(_CUMWEIGHTS, u)
     idx = np.clip(idx, 0, len(_PAULIS_2Q) - 1)
-    p0_arr = np.array([_PAULIS_2Q[i][0] for i in idx], dtype=np.int8)
-    p1_arr = np.array([_PAULIS_2Q[i][1] for i in idx], dtype=np.int8)
+    p0_arr = _PAULIS_2Q_ARR[idx, 0]
+    p1_arr = _PAULIS_2Q_ARR[idx, 1]
 
     f0 = frame.frame[trigger, q0]
     f1 = frame.frame[trigger, q1]

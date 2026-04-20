@@ -8,7 +8,7 @@ from qec_sim.circuit.simulator import SimulatorPool
 
 class DatasetGenerator:
     def __init__(self, code_config: CodeParams, noise_configs: list[NoiseParams]):
-        self.pool = SimulatorPool(code_config, noise_configs)
+        self.pool = SimulatorPool.from_stim(code_config, noise_configs)
 
     def generate_and_save(self, shots: int, save_dir: str, filename: str, batch_size: int = 50000):
         Path(save_dir).mkdir(parents=True, exist_ok=True)

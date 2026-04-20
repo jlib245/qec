@@ -98,3 +98,23 @@ def compute_coset_labels(syndromes: np.ndarray, observables: np.ndarray,
         labels = coset_bits[:, 1].astype(np.int64) * 2 + coset_bits[:, 0].astype(np.int64)
 
     return labels
+
+
+def coset_index_to_bits(indices: np.ndarray, n_obs: int) -> np.ndarray:
+    """
+    Coset class index → observable bit 배열로 변환.
+    compute_coset_labels의 역연산.
+
+    Args:
+        indices: (N,) int, class indices
+        n_obs: observable 수
+
+    Returns:
+        bits: (N, n_obs) uint8
+    """
+    if n_obs == 1:
+        return indices[:, np.newaxis].astype(np.uint8)
+    else:
+        obs0 = (indices % 2).astype(np.uint8)
+        obs1 = (indices // 2).astype(np.uint8)
+        return np.stack([obs0, obs1], axis=-1)

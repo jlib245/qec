@@ -5,6 +5,14 @@ from abc import ABC, abstractmethod
 from typing import Tuple, Dict, Any, List
 from torch.utils.data import DataLoader
 
+
+def get_best_device() -> torch.device:
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
 class BaseQECModel(nn.Module, ABC):
     """[Level 1] 순수 코어 모델 (수학적 연산만 수행)"""
     def __init__(self, num_observables: int, **kwargs):

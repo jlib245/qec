@@ -6,8 +6,8 @@ Stim은 회로 구조(qubit 좌표, CX 레이어, observable 정의) 추출에�
 실제 에러 추적은 PauliFrame이 담당.
 
 Phase 1: SI1000 depolarizing noise
-Phase 2: Leakage (L2/L3) — 미구현
-Phase 3: Crosstalk, IQ noise — 미구현
+Phase 2: Leakage (L2/L3) + IQ soft measurement
+Phase 3: Crosstalk (ZZ-dominant phenomenological)
 
 SI1000 noise strengths:
   - 2q gate (CX):          2q depolarizing   p

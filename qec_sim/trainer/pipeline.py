@@ -19,10 +19,8 @@ class TrainingPipeline:
     def __init__(self, config_path: str):
         self.config_path = config_path
         self.config = ExperimentConfig.from_yaml(config_path)
-        self.device = torch.device(
-            "cuda" if torch.cuda.is_available() else
-            "mps" if torch.backends.mps.is_available() else "cpu"
-        )
+        from qec_sim.core.interfaces import get_best_device
+        self.device = get_best_device()
         self.workspace = {}
 
     def _setup_workspace(self):

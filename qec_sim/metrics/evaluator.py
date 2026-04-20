@@ -5,6 +5,11 @@ import numpy as np
 from qec_sim.decoders.base import BaseDecoder
 
 
+def coerce_label_dtype(y: torch.Tensor) -> torch.Tensor:
+    """CrossEntropyLoss는 long, BCEWithLogitsLoss는 float을 요구."""
+    return y.long() if y.dtype in (torch.int32, torch.int64) else y.float()
+
+
 class Evaluator:
     def __init__(self, device, criterion=None):
         self.device = device
@@ -29,8 +34,7 @@ class Evaluator:
                     break
 
                 batch_data = {k: v.to(self.device).float() for k, v in batch_dict.items()}
-                batch_y = labels.to(self.device)
-                batch_y = batch_y.long() if batch_y.dtype in (torch.int32, torch.int64) else batch_y.float()
+                batch_y = coerce_label_dtype(labels.to(self.device))
 
                 outputs = model(batch_data)
                 loss = self.criterion(outputs, batch_y)

@@ -18,10 +18,8 @@ class EvaluationPipeline:
         self.config = ExperimentConfig.from_yaml(config_path)
         self.config_path = config_path
         self.model_path = model_path
-        self.device = torch.device(
-            "cuda" if torch.cuda.is_available() else
-            "mps" if torch.backends.mps.is_available() else "cpu"
-        )
+        from qec_sim.core.interfaces import get_best_device
+        self.device = get_best_device()
 
     def run(self, shots: int = 10000):
         # eval 로그를 모델 디렉토리에 파일로도 저장
@@ -31,12 +29,7 @@ class EvaluationPipeline:
         log_path = os.path.join(log_dir, f"eval_{timestamp}.log")
         log_file = open(log_path, 'w', encoding='utf-8')
 
-        # 터미널 + 파일 동시 출력 (TrainingPipeline의 _Tee와 동일한 방식)
-        class _Tee:
-            def __init__(self, *streams): self._s = streams
-            def write(self, d): [s.write(d) for s in self._s]
-            def flush(self): [s.flush() for s in self._s]
-
+        from qec_sim.trainer.callbacks import _Tee
         orig_stdout = sys.stdout
         sys.stdout = _Tee(orig_stdout, log_file)
 

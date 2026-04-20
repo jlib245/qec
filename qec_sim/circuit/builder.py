@@ -26,8 +26,7 @@ class SurfaceCodeBuilder(BaseCircuitBuilder):
         노이즈 파라미터가 리스트인 경우 첫 번째 값을 기준으로 대표 회로를 구성.
         """
         super().__init__(code_params, noise_params, **kwargs)
-        self.code = code_params
-        
+
         self.p_gate = noise_params.p_gate[0] if isinstance(noise_params.p_gate, list) else noise_params.p_gate
         self.p_meas = noise_params.p_meas[0] if isinstance(noise_params.p_meas, list) else noise_params.p_meas
         self.p_corr = noise_params.p_corr[0] if isinstance(noise_params.p_corr, list) else noise_params.p_corr
@@ -40,8 +39,8 @@ class SurfaceCodeBuilder(BaseCircuitBuilder):
         """
         circuit = stim.Circuit.generated(
             "surface_code:rotated_memory_z",
-            distance=self.code.distance,
-            rounds=self.code.rounds,
+            distance=self.code_params.distance,
+            rounds=self.code_params.rounds,
             after_clifford_depolarization=self.p_gate,
             before_measure_flip_probability=self.p_meas,
             # p_leak은 simulator.py에서 별도 후처리, -> Herald Erasure로 처리 가능..? -> but 회로 다 뜯어야 할 것

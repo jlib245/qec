@@ -4,6 +4,7 @@ import numpy as np
 
 from .base import BaseDecoder
 from .registry import register_decoder
+from .lut import compute_lut_correction, coset_index_to_bits
 from qec_sim.models.wrapper import PreprocessorWrapper
 
 
@@ -38,21 +39,10 @@ class NeuralDecoder(BaseDecoder):
                 logits = self.model(batch_dict)
 
                 if self.coset_lut is not None:
-                    # coset mode: argmax → coset class → observable 복원
-                    from qec_sim.decoders.lut import compute_lut_correction
-                    coset_pred = logits.argmax(dim=-1).cpu().numpy()  # (batch,)
-                    n_obs = self.coset_lut.shape[1]
-
-                    if n_obs == 1:
-                        coset_bits = coset_pred[:, np.newaxis].astype(np.uint8)
-                    else:
-                        obs0 = coset_pred % 2
-                        obs1 = coset_pred // 2
-                        coset_bits = np.stack([obs0, obs1], axis=-1).astype(np.uint8)
-
+                    coset_pred = logits.argmax(dim=-1).cpu().numpy()
+                    coset_bits = coset_index_to_bits(coset_pred, self.coset_lut.shape[1])
                     lut_corr = compute_lut_correction(syndromes[start:end], self.coset_lut)
-                    final_pred = (coset_bits ^ lut_corr).astype(bool)
-                    all_preds.append(final_pred)
+                    all_preds.append((coset_bits ^ lut_corr).astype(bool))
                 else:
                     # binary mode
                     all_preds.append((logits > 0).cpu().numpy().astype(bool))

@@ -1,5 +1,6 @@
 # qec_sim/trainer/trainer.py
 import torch
+from qec_sim.metrics.evaluator import coerce_label_dtype
 
 
 class Trainer:
@@ -27,8 +28,7 @@ class Trainer:
                 break
 
             batch_data = {k: v.to(self.device).float() for k, v in batch_dict.items()}
-            y = labels.to(self.device)
-            y = y.long() if y.dtype in (torch.int32, torch.int64) else y.float()
+            y = coerce_label_dtype(labels.to(self.device))
 
             self.optimizer.zero_grad()
             outputs = self.model(batch_data)

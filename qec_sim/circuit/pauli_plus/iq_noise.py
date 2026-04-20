@@ -114,7 +114,7 @@ def _compute_posterior_batch_nb(z, snr, p_decay):
 # ------------------------------------------------------------------ #
 
 def get_true_z_state(frame: PauliFrame, qubit: int) -> np.ndarray:
-    """
+    """[Deprecated] batch 버전(_get_true_z_state_batch_nb) 사용 권장.
     측정 전 qubit의 true Z-basis state를 반환.
     Returns (n_shots,) int array: 0=|0⟩, 1=|1⟩, 2=leaked
     frame을 변경하지 않음 (read-only).
@@ -131,27 +131,23 @@ def get_true_z_state(frame: PauliFrame, qubit: int) -> np.ndarray:
 def sample_iq(true_state: np.ndarray, snr: float,
               t_meas_over_T1: float,
               rng: np.random.Generator) -> np.ndarray:
-    """
+    """[Deprecated] batch 버전(_sample_iq_batch_nb) 사용 권장.
     true_state: (n_shots,) int {0, 1, 2}
     Returns z: (n_shots,) float — IQ 투영값
     """
     n = len(true_state)
-    z = rng.standard_normal(n)  # 기본 노이즈 (σ=1)
+    z = rng.standard_normal(n)
 
-    # |0⟩: center 0 (z 그대로)
-    # |1⟩: center snr, T1 decay 보정
     p_decay = 1.0 - np.exp(-t_meas_over_T1) if t_meas_over_T1 > 0 else 0.0
 
     is_1 = true_state == 1
     is_2 = true_state == 2
 
-    # |1⟩인 shot 중 decay된 것은 |0⟩ 클러스터에서 샘플
     decayed = is_1 & (rng.random(n) < p_decay)
     not_decayed = is_1 & ~decayed
 
-    z[not_decayed] += snr        # |1⟩ 클러스터
-    # decayed는 |0⟩ 클러스터 → z 그대로
-    z[is_2] += snr / 2           # leakage 클러스터 (|0⟩과 |1⟩ 사이)
+    z[not_decayed] += snr
+    z[is_2] += snr / 2
 
     return z
 
@@ -163,17 +159,17 @@ def sample_iq(true_state: np.ndarray, snr: float,
 def compute_posterior(z: np.ndarray, snr: float,
                       t_meas_over_T1: float,
                       prior: np.ndarray | None = None) -> tuple:
-    """
+    """[Deprecated] batch 버전(_compute_posterior_batch_nb) 사용 권장.
     z: (n_shots,) IQ 값
     prior: (n_shots, 3) — [P(0), P(1), P(2)], None이면 uniform
     Returns:
       post1: (n_shots,) P(state=1 | z)
       post2: (n_shots,) P(state=2 | z)
     """
+    from scipy.stats import norm
     n = len(z)
     p_decay = 1.0 - np.exp(-t_meas_over_T1) if t_meas_over_T1 > 0 else 0.0
 
-    # Likelihood P(z | state)
     like_0 = norm.pdf(z, loc=0,       scale=1)
     like_1 = ((1 - p_decay) * norm.pdf(z, loc=snr,     scale=1)
               + p_decay      * norm.pdf(z, loc=0,       scale=1))
@@ -189,10 +185,10 @@ def compute_posterior(z: np.ndarray, snr: float,
     ], axis=1)
 
     total = unnorm.sum(axis=1, keepdims=True)
-    total = np.where(total == 0, 1.0, total)  # div-by-zero 방지
+    total = np.where(total == 0, 1.0, total)
     posterior = unnorm / total
 
-    return posterior[:, 1], posterior[:, 2]  # post1, post2
+    return posterior[:, 1], posterior[:, 2]
 
 
 # ------------------------------------------------------------------ #

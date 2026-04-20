@@ -120,25 +120,32 @@ class OnlineQECDataset(IterableDataset):
         self.chunk_size = chunk_size
         self.cpu_transform = cpu_transform
         self.cover_all_simulators = cover_all_simulators
-        self.coset_lut = coset_lut  # None이면 binary mode, 있으면 coset 4-class mode
+        self.coset_lut = coset_lut
 
-    def _yield_sample(self, raw, i):
-        sample = {
-            k: torch.tensor(raw[k][i], dtype=torch.float32)
+    def _yield_chunk(self, raw):
+        """chunk 단위로 텐서 변환 + 라벨 계산 후 sample별로 yield."""
+        n = len(raw['observables'])
+
+        # chunk 전체를 한 번에 텐서로 변환
+        tensors = {
+            k: torch.from_numpy(raw[k]).float()
             for k in self.required_keys
             if k in raw
         }
-        if self.cpu_transform:
-            sample = self.cpu_transform(sample)
 
         if self.coset_lut is not None:
             from qec_sim.decoders.lut import compute_coset_labels
-            syn = raw['syndromes'][i:i+1]
-            obs = raw['observables'][i:i+1]
-            label = torch.tensor(compute_coset_labels(syn, obs, self.coset_lut)[0], dtype=torch.long)
+            label_arr = torch.from_numpy(
+                compute_coset_labels(raw['syndromes'], raw['observables'], self.coset_lut)
+            )
         else:
-            label = torch.tensor(raw['observables'][i], dtype=torch.float32)
-        return sample, label
+            label_arr = torch.from_numpy(raw['observables']).float()
+
+        for i in range(n):
+            sample = {k: v[i] for k, v in tensors.items()}
+            if self.cpu_transform:
+                sample = self.cpu_transform(sample)
+            yield sample, label_arr[i]
 
     def __iter__(self):
         worker_info = torch.utils.data.get_worker_info()
@@ -153,41 +160,41 @@ class OnlineQECDataset(IterableDataset):
         else:
             yield from self._iter_random(num_workers, worker_id)
 
+    @staticmethod
+    def _worker_samples(total, num_workers, worker_id):
+        """워커별 샘플 수 계산. 나머지는 마지막 워커에게."""
+        per_worker = total // num_workers
+        if worker_id == num_workers - 1:
+            per_worker += total - per_worker * num_workers
+        return per_worker
+
     def _iter_all_simulators(self, num_workers, worker_id):
         """모든 시뮬레이터를 균등하게 순회하며 데이터 생성."""
         all_sims = self.simulator_pool.get_all_simulators()
         per_sim = self.epoch_samples // len(all_sims)
 
         for sim in all_sims:
-            # 워커별 분배
-            per_worker = per_sim // num_workers
-            if worker_id == num_workers - 1:
-                per_worker += per_sim - per_worker * num_workers
-
+            per_worker = self._worker_samples(per_sim, num_workers, worker_id)
             generated = 0
             while generated < per_worker:
                 batch = min(self.chunk_size, per_worker - generated)
                 raw = sim.generate_data(batch)
-                for i in range(len(raw['observables'])):
-                    yield self._yield_sample(raw, i)
+                for sample, label in self._yield_chunk(raw):
+                    yield sample, label
                     generated += 1
                     if generated >= per_worker:
                         break
 
     def _iter_random(self, num_workers, worker_id):
         """랜덤 시뮬레이터로 데이터 생성 (기존 동작)."""
-        per_worker = self.epoch_samples // num_workers
-        if worker_id == num_workers - 1:
-            per_worker += self.epoch_samples - per_worker * num_workers
-
+        per_worker = self._worker_samples(self.epoch_samples, num_workers, worker_id)
         generated = 0
         while generated < per_worker:
             sim = self.simulator_pool.get_random_simulator()
             batch = min(self.chunk_size, per_worker - generated)
             raw = sim.generate_data(batch)
-
-            for i in range(len(raw['observables'])):
-                yield self._yield_sample(raw, i)
+            for sample, label in self._yield_chunk(raw):
+                yield sample, label
                 generated += 1
                 if generated >= per_worker:
                     break
