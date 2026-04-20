@@ -32,6 +32,13 @@ class ComponentFactory:
         preprocessor_cls = get_preprocessor_class(preprocessor_name)
         preprocessor = preprocessor_cls.from_config(config, circuit, simulator_pool)
 
+        # 3.5. Coset mode: DEM에서 LUT 생성
+        coset_mode = getattr(config.model, 'coset_mode', False)
+        coset_lut = None
+        if coset_mode:
+            from qec_sim.decoders.lut import build_detector_lut
+            coset_lut = build_detector_lut(circuit)
+
         # 4. 데이터 모듈 생성 (data_mode에 따라 전략 선택)
         if data_mode == "online":
             strategy = OnlineDataStrategy(
@@ -39,6 +46,7 @@ class ComponentFactory:
                 simulator_pool=simulator_pool,
                 required_keys=preprocessor.required_data_keys,
                 cpu_transform=preprocessor.cpu_transform,
+                coset_lut=coset_lut,
             )
         elif data_mode == "offline":
             strategy = OfflineDataStrategy(
@@ -53,7 +61,11 @@ class ComponentFactory:
 
         # 5. 코어 모델 생성 (전처리기의 출력 규격 주입)
         model_kwargs = preprocessor.get_model_kwargs()
-        model_kwargs["num_observables"] = circuit.num_observables
+        # coset mode: 2^num_observables class 출력, binary mode: num_observables 출력
+        if coset_mode:
+            model_kwargs["num_observables"] = 2 ** circuit.num_observables
+        else:
+            model_kwargs["num_observables"] = circuit.num_observables
         model_kwargs["code_distance"] = config.code.distance
         model_kwargs.update(config.model.kwargs)
 

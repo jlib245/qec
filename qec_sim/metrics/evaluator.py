@@ -29,14 +29,21 @@ class Evaluator:
                     break
 
                 batch_data = {k: v.to(self.device).float() for k, v in batch_dict.items()}
-                batch_y = labels.to(self.device).float()
+                batch_y = labels.to(self.device)
+                batch_y = batch_y.long() if batch_y.dtype in (torch.int32, torch.int64) else batch_y.float()
 
                 outputs = model(batch_data)
                 loss = self.criterion(outputs, batch_y)
                 total_loss += loss.item()
 
-                preds = (outputs > 0.0).float()
-                batch_errors = (preds.bool() != batch_y.bool()).any(dim=1).sum().item()
+                if batch_y.dtype == torch.long:
+                    # coset mode: 4-class argmax
+                    preds = outputs.argmax(dim=-1)
+                    batch_errors = (preds != batch_y).sum().item()
+                else:
+                    # binary mode
+                    preds = (outputs > 0.0).float()
+                    batch_errors = (preds.bool() != batch_y.bool()).any(dim=1).sum().item()
                 total_errors += batch_errors
                 total_samples += batch_y.size(0)
                 num_steps += 1

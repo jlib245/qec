@@ -111,12 +111,34 @@ class OnlineQECDataset(IterableDataset):
         epoch_samples: int,
         chunk_size: int,
         cpu_transform: Optional[Callable] = None,
+        cover_all_simulators: bool = False,
+        coset_lut=None,
     ):
         self.simulator_pool = simulator_pool
         self.required_keys = required_keys
         self.epoch_samples = epoch_samples
         self.chunk_size = chunk_size
         self.cpu_transform = cpu_transform
+        self.cover_all_simulators = cover_all_simulators
+        self.coset_lut = coset_lut  # None이면 binary mode, 있으면 coset 4-class mode
+
+    def _yield_sample(self, raw, i):
+        sample = {
+            k: torch.tensor(raw[k][i], dtype=torch.float32)
+            for k in self.required_keys
+            if k in raw
+        }
+        if self.cpu_transform:
+            sample = self.cpu_transform(sample)
+
+        if self.coset_lut is not None:
+            from qec_sim.decoders.lut import compute_coset_labels
+            syn = raw['syndromes'][i:i+1]
+            obs = raw['observables'][i:i+1]
+            label = torch.tensor(compute_coset_labels(syn, obs, self.coset_lut)[0], dtype=torch.long)
+        else:
+            label = torch.tensor(raw['observables'][i], dtype=torch.float32)
+        return sample, label
 
     def __iter__(self):
         worker_info = torch.utils.data.get_worker_info()
@@ -126,9 +148,35 @@ class OnlineQECDataset(IterableDataset):
             num_workers = worker_info.num_workers
             worker_id = worker_info.id
 
-        # 각 워커는 epoch_samples / num_workers 만큼 생성
+        if self.cover_all_simulators:
+            yield from self._iter_all_simulators(num_workers, worker_id)
+        else:
+            yield from self._iter_random(num_workers, worker_id)
+
+    def _iter_all_simulators(self, num_workers, worker_id):
+        """모든 시뮬레이터를 균등하게 순회하며 데이터 생성."""
+        all_sims = self.simulator_pool.get_all_simulators()
+        per_sim = self.epoch_samples // len(all_sims)
+
+        for sim in all_sims:
+            # 워커별 분배
+            per_worker = per_sim // num_workers
+            if worker_id == num_workers - 1:
+                per_worker += per_sim - per_worker * num_workers
+
+            generated = 0
+            while generated < per_worker:
+                batch = min(self.chunk_size, per_worker - generated)
+                raw = sim.generate_data(batch)
+                for i in range(len(raw['observables'])):
+                    yield self._yield_sample(raw, i)
+                    generated += 1
+                    if generated >= per_worker:
+                        break
+
+    def _iter_random(self, num_workers, worker_id):
+        """랜덤 시뮬레이터로 데이터 생성 (기존 동작)."""
         per_worker = self.epoch_samples // num_workers
-        # 나머지는 마지막 워커에게
         if worker_id == num_workers - 1:
             per_worker += self.epoch_samples - per_worker * num_workers
 
@@ -138,19 +186,8 @@ class OnlineQECDataset(IterableDataset):
             batch = min(self.chunk_size, per_worker - generated)
             raw = sim.generate_data(batch)
 
-            observables = raw['observables']
-            for i in range(len(observables)):
-                sample = {
-                    k: torch.tensor(raw[k][i], dtype=torch.float32)
-                    for k in self.required_keys
-                    if k in raw
-                }
-
-                if self.cpu_transform:
-                    sample = self.cpu_transform(sample)
-
-                label = torch.tensor(observables[i], dtype=torch.float32)
-                yield sample, label
+            for i in range(len(raw['observables'])):
+                yield self._yield_sample(raw, i)
                 generated += 1
                 if generated >= per_worker:
                     break
@@ -159,11 +196,13 @@ class OnlineQECDataset(IterableDataset):
 class OnlineDataStrategy:
     """시뮬레이터에서 실시간으로 데이터를 생성하는 전략."""
 
-    def __init__(self, config, simulator_pool, required_keys: List[str], cpu_transform: Optional[Callable] = None):
+    def __init__(self, config, simulator_pool, required_keys: List[str],
+                 cpu_transform: Optional[Callable] = None, coset_lut=None):
         self.config = config
         self.simulator_pool = simulator_pool
         self.required_keys = required_keys
         self.cpu_transform = cpu_transform
+        self.coset_lut = coset_lut
         self._train_dataset: Optional[OnlineQECDataset] = None
         self._val_dataset: Optional[OnlineQECDataset] = None
 
@@ -172,12 +211,18 @@ class OnlineDataStrategy:
         train_samples = tc.train_steps or 10000
         val_samples = tc.val_steps or 2000
 
+        # val_steps를 시뮬레이터 수의 배수로 올림 (균등 분배 보장)
+        num_sims = len(self.simulator_pool.get_all_simulators())
+        if val_samples % num_sims != 0:
+            val_samples = ((val_samples // num_sims) + 1) * num_sims
+
         self._train_dataset = OnlineQECDataset(
             simulator_pool=self.simulator_pool,
             required_keys=self.required_keys,
             epoch_samples=train_samples,
             chunk_size=tc.chunk_size,
             cpu_transform=self.cpu_transform,
+            coset_lut=self.coset_lut,
         )
         self._val_dataset = OnlineQECDataset(
             simulator_pool=self.simulator_pool,
@@ -185,6 +230,8 @@ class OnlineDataStrategy:
             epoch_samples=val_samples,
             chunk_size=tc.chunk_size,
             cpu_transform=self.cpu_transform,
+            cover_all_simulators=True,
+            coset_lut=self.coset_lut,
         )
 
     def get_loaders(self) -> Tuple[DataLoader, DataLoader]:

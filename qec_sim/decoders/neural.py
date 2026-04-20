@@ -12,12 +12,16 @@ class NeuralDecoder(BaseDecoder):
     """
     PreprocessorWrapper를 감싸는 디코더.
     numpy 배열을 받아 dict 텐서로 변환 후 래퍼에 전달합니다.
+
+    coset_mode=True일 때:
+      CNN → 4-class logits → argmax → coset class → LUT correction과 XOR → 최종 observable 예측
     """
 
-    def __init__(self, model: PreprocessorWrapper, **kwargs):
+    def __init__(self, model: PreprocessorWrapper, coset_lut=None, **kwargs):
         self.model = model
         self.model.eval()
         self.device = next(self.model.parameters()).device
+        self.coset_lut = coset_lut
 
     def decode_batch(self, syndromes: np.ndarray, erasures: np.ndarray = None, batch_size: int = 4096) -> np.ndarray:
         n = len(syndromes)
@@ -32,6 +36,32 @@ class NeuralDecoder(BaseDecoder):
 
             with torch.no_grad():
                 logits = self.model(batch_dict)
-                all_preds.append((logits > 0).cpu().numpy().astype(bool))
+
+                if self.coset_lut is not None:
+                    # coset mode: argmax → coset class → observable 복원
+                    from qec_sim.decoders.lut import compute_lut_correction
+                    coset_pred = logits.argmax(dim=-1).cpu().numpy()  # (batch,)
+                    n_obs = self.coset_lut.shape[1]
+
+                    if n_obs == 1:
+                        coset_bits = coset_pred[:, np.newaxis].astype(np.uint8)
+                    else:
+                        obs0 = coset_pred % 2
+                        obs1 = coset_pred // 2
+                        coset_bits = np.stack([obs0, obs1], axis=-1).astype(np.uint8)
+
+                    lut_corr = compute_lut_correction(syndromes[start:end], self.coset_lut)
+                    final_pred = (coset_bits ^ lut_corr).astype(bool)
+                    all_preds.append(final_pred)
+                else:
+                    # binary mode
+                    all_preds.append((logits > 0).cpu().numpy().astype(bool))
 
         return np.concatenate(all_preds, axis=0)
+
+    def decode_single_with_correction(self, syndrome: np.ndarray) -> dict:
+        preds = self.decode_batch(syndrome[np.newaxis], batch_size=1)
+        return {
+            "logical_error": preds[0].tolist(),
+            "corrected_fault_ids": [],
+        }

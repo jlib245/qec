@@ -27,7 +27,8 @@ class Trainer:
                 break
 
             batch_data = {k: v.to(self.device).float() for k, v in batch_dict.items()}
-            y = labels.to(self.device).float()
+            y = labels.to(self.device)
+            y = y.long() if y.dtype in (torch.int32, torch.int64) else y.float()
 
             self.optimizer.zero_grad()
             outputs = self.model(batch_data)

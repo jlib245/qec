@@ -121,6 +121,7 @@ class TrainingConfig:
 class ModelConfig:
     name: str
     use_erasures: bool = True
+    coset_mode: bool = False
     kwargs: Dict[str, Any] = field(default_factory=dict)
     preprocessor: Dict[str, Any] = field(default_factory=dict)
 

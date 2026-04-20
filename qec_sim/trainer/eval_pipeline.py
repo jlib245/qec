@@ -46,7 +46,7 @@ class EvaluationPipeline:
             sys.stdout = orig_stdout
             log_file.close()
 
-    def _build_neural_decoder(self):
+    def _build_neural_decoder(self, circuit=None):
         if self.model_path is None:
             raise ValueError("neural_decoder 사용 시 --model 경로가 필요합니다.")
         _, wrapped_model = ComponentFactory.build_system(self.config)
@@ -54,7 +54,13 @@ class EvaluationPipeline:
         wrapped_model.load_state_dict(state)
         wrapped_model = wrapped_model.to(self.device)
         wrapped_model.eval()
-        return NeuralDecoder(model=wrapped_model)
+
+        coset_lut = None
+        if getattr(self.config.model, 'coset_mode', False) and circuit is not None:
+            from qec_sim.decoders.lut import build_detector_lut
+            coset_lut = build_detector_lut(circuit)
+
+        return NeuralDecoder(model=wrapped_model, coset_lut=coset_lut)
 
     def _run(self, shots: int, timestamp: str):
         decoder_name = self.config.decoder.name
@@ -64,12 +70,7 @@ class EvaluationPipeline:
             print(f"모델: {self.model_path}")
         print()
 
-        # 1. neural_decoder는 모델을 미리 로드
-        neural_decoder = None
-        if decoder_name == "neural_decoder":
-            neural_decoder = self._build_neural_decoder()
-
-        # 2. 시뮬레이터 목록 구성 (backend에 따라 분기)
+        # 1. 시뮬레이터 목록 구성 (backend에 따라 분기)
         from qec_sim.trainer.factory import _build_simulator_pool
         backend = self.config.simulation.get('backend', 'stim')
         results = []
@@ -85,7 +86,7 @@ class EvaluationPipeline:
                 sim = CircuitNoiseSimulator(circuit, noise_cfg)
                 label = {"p_gate": noise_cfg.p_gate, "p_meas": noise_cfg.p_meas,
                          "p_corr": noise_cfg.p_corr, "p_leak": noise_cfg.p_leak}
-                simulators_with_labels.append((sim, label, circuit if decoder_name == "mwpm" else None))
+                simulators_with_labels.append((sim, label, circuit))
         else:
             # pauli_plus: 단일 시뮬레이터
             pp_cfg = self.config.simulation.get('pauli_plus', {})
@@ -96,6 +97,12 @@ class EvaluationPipeline:
             label = {"p": noise.p, "cz_dephasing_leakage": noise.cz_dephasing_leakage,
                      "heating_rate_per_us": noise.heating_rate_per_us}
             simulators_with_labels = [(sim, label, None)]
+
+        # 2. neural_decoder는 모델을 미리 로드 (첫 circuit으로 LUT 생성)
+        neural_decoder = None
+        if decoder_name == "neural_decoder":
+            first_circuit = simulators_with_labels[0][2] if simulators_with_labels else None
+            neural_decoder = self._build_neural_decoder(circuit=first_circuit)
 
         print(f"{'backend':>12}: {backend}")
         print(f"{'LER':>12}")
