@@ -21,11 +21,20 @@ class EvaluationPipeline:
         from qec_sim.core.interfaces import get_best_device
         self.device = get_best_device()
 
+    def _resolve_output_dir(self, timestamp: str) -> str:
+        # model_path가 있으면 그 옆에 (학습 시 이미 timestamped 디렉토리),
+        # 없으면 training.output_dir에 timestamp prefix 붙여 새로 생성.
+        if self.model_path:
+            return os.path.dirname(self.model_path)
+        out = self.config.training.output_dir
+        root = os.path.join(os.path.dirname(out), f"{timestamp}_{os.path.basename(out)}")
+        os.makedirs(root, exist_ok=True)
+        return root
+
     def run(self, shots: int = 10000):
-        # eval 로그를 모델 디렉토리에 파일로도 저장
         import sys
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        log_dir = os.path.dirname(self.model_path) if self.model_path else "."
+        log_dir = self._resolve_output_dir(timestamp)
         log_path = os.path.join(log_dir, f"eval_{timestamp}.log")
         log_file = open(log_path, 'w', encoding='utf-8')
 
@@ -67,7 +76,7 @@ class EvaluationPipeline:
         from qec_sim.trainer.factory import _build_simulator_pool
         backend = self.config.simulation.get('backend', 'stim')
         results = []
-        model_dir = os.path.dirname(self.model_path) if self.model_path else "."
+        model_dir = self._resolve_output_dir(timestamp)
 
         if backend == 'stim':
             noise_configs = self.config.get_expanded_noise_configs()

@@ -25,7 +25,8 @@ class TrainingPipeline:
 
     def _setup_workspace(self):
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        root = f"{self.config.training.output_dir}_{timestamp}"
+        out = self.config.training.output_dir
+        root = os.path.join(os.path.dirname(out), f"{timestamp}_{os.path.basename(out)}")
         os.makedirs(root, exist_ok=True)
         self.workspace = {
             "root":        root,
