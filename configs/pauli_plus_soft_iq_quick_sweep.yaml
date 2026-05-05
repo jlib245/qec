@@ -43,8 +43,8 @@ simulation:
   shots: 1000
   backend: "pauli_plus"
   pauli_plus:
-    p: 0.002
-    cz_dephasing_leakage: 2.0e-4
+    p: [0.001, 0.002, 0.005]
+    cz_dephasing_leakage: [0.0, 2.0e-4]
     heating_rate_per_us: 0.001429
     passive_decay_T1_us: 20.0
     leakage_removal_after_reset: true
