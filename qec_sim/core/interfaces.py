@@ -24,8 +24,12 @@ class BaseQECModel(nn.Module, ABC):
         pass
 
 
-class BasePreprocessor(ABC):
-    """[Level 2] 전처리기 (데이터 공급과 가공 정책을 통제)"""
+class BasePreprocessor(nn.Module, ABC):
+    """[Level 2] 전처리기 (데이터 공급과 가공 정책을 통제).
+
+    nn.Module 상속 — 텐서 인덱스를 register_buffer(persistent=False)로
+    등록하면 wrapper.to(device) 시 자동 이동, state_dict에는 미포함.
+    """
 
     @classmethod
     @abstractmethod

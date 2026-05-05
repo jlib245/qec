@@ -102,7 +102,12 @@ class OfflineDataStrategy:
 
 
 class OnlineQECDataset(IterableDataset):
-    """시뮬레이터에서 on-the-fly로 데이터를 생성하는 IterableDataset."""
+    """시뮬레이터에서 on-the-fly로 데이터를 생성하는 IterableDataset.
+
+    chunk(시뮬 1회 호출분)를 받아 batch_size 단위 슬라이스로 yield.
+    DataLoader는 batch_size=None으로 받아 collate 없이 그대로 통과 →
+    sample-by-sample yield + collate 라운드트립 제거.
+    """
 
     def __init__(
         self,
@@ -110,6 +115,7 @@ class OnlineQECDataset(IterableDataset):
         required_keys: List[str],
         epoch_samples: int,
         chunk_size: int,
+        batch_size: int,
         cpu_transform: Optional[Callable] = None,
         cover_all_simulators: bool = False,
         coset_lut=None,
@@ -118,17 +124,18 @@ class OnlineQECDataset(IterableDataset):
         self.required_keys = required_keys
         self.epoch_samples = epoch_samples
         self.chunk_size = chunk_size
+        self.batch_size = batch_size
         self.cpu_transform = cpu_transform
         self.cover_all_simulators = cover_all_simulators
         self.coset_lut = coset_lut
 
-    def _yield_chunk(self, raw):
-        """chunk 단위로 텐서 변환 + 라벨 계산 후 sample별로 yield."""
+    def _yield_chunk_batches(self, raw):
+        """chunk를 batch_size 단위로 슬라이스해 (batch_dict, batch_labels) yield."""
         n = len(raw['observables'])
 
-        # chunk 전체를 한 번에 텐서로 변환
+        # zero-copy view — trainer가 .float()로 변환하므로 여기서는 dtype 유지.
         tensors = {
-            k: torch.from_numpy(raw[k]).float()
+            k: torch.from_numpy(raw[k])
             for k in self.required_keys
             if k in raw
         }
@@ -139,13 +146,15 @@ class OnlineQECDataset(IterableDataset):
                 compute_coset_labels(raw['syndromes'], raw['observables'], self.coset_lut)
             )
         else:
-            label_arr = torch.from_numpy(raw['observables']).float()
+            label_arr = torch.from_numpy(raw['observables'])
 
-        for i in range(n):
-            sample = {k: v[i] for k, v in tensors.items()}
+        bs = self.batch_size
+        for start in range(0, n, bs):
+            end = min(start + bs, n)
+            batch = {k: t[start:end] for k, t in tensors.items()}
             if self.cpu_transform:
-                sample = self.cpu_transform(sample)
-            yield sample, label_arr[i]
+                batch = self.cpu_transform(batch)
+            yield batch, label_arr[start:end]
 
     def __iter__(self):
         worker_info = torch.utils.data.get_worker_info()
@@ -184,13 +193,10 @@ class OnlineQECDataset(IterableDataset):
             per_worker = self._worker_samples(per_sim, num_workers, worker_id)
             generated = 0
             while generated < per_worker:
-                batch = min(self.chunk_size, per_worker - generated)
-                raw = sim.generate_data(batch)
-                for sample, label in self._yield_chunk(raw):
-                    yield sample, label
-                    generated += 1
-                    if generated >= per_worker:
-                        break
+                n_get = min(self.chunk_size, per_worker - generated)
+                raw = sim.generate_data(n_get)
+                yield from self._yield_chunk_batches(raw)
+                generated += n_get
 
     def _iter_random(self, num_workers, worker_id):
         """랜덤 시뮬레이터로 데이터 생성 (기존 동작)."""
@@ -198,13 +204,10 @@ class OnlineQECDataset(IterableDataset):
         generated = 0
         while generated < per_worker:
             sim = self.simulator_pool.get_random_simulator()
-            batch = min(self.chunk_size, per_worker - generated)
-            raw = sim.generate_data(batch)
-            for sample, label in self._yield_chunk(raw):
-                yield sample, label
-                generated += 1
-                if generated >= per_worker:
-                    break
+            n_get = min(self.chunk_size, per_worker - generated)
+            raw = sim.generate_data(n_get)
+            yield from self._yield_chunk_batches(raw)
+            generated += n_get
 
 
 class OnlineDataStrategy:
@@ -235,6 +238,7 @@ class OnlineDataStrategy:
             required_keys=self.required_keys,
             epoch_samples=train_samples,
             chunk_size=tc.chunk_size,
+            batch_size=tc.batch_size,
             cpu_transform=self.cpu_transform,
             coset_lut=self.coset_lut,
         )
@@ -243,6 +247,7 @@ class OnlineDataStrategy:
             required_keys=self.required_keys,
             epoch_samples=val_samples,
             chunk_size=tc.chunk_size,
+            batch_size=tc.batch_size,
             cpu_transform=self.cpu_transform,
             cover_all_simulators=True,
             coset_lut=self.coset_lut,
@@ -255,9 +260,10 @@ class OnlineDataStrategy:
         tc = self.config.training
         pf = tc.prefetch_factor if tc.num_workers > 0 else None
 
+        # batch_size=None: dataset이 이미 batch 단위로 yield하므로 collate 안 함.
         train_loader = DataLoader(
             self._train_dataset,
-            batch_size=tc.batch_size,
+            batch_size=None,
             num_workers=tc.num_workers,
             pin_memory=tc.pin_memory,
             prefetch_factor=pf,
@@ -265,7 +271,7 @@ class OnlineDataStrategy:
         )
         val_loader = DataLoader(
             self._val_dataset,
-            batch_size=tc.batch_size,
+            batch_size=None,
             num_workers=tc.num_workers,
             pin_memory=tc.pin_memory,
             prefetch_factor=pf,

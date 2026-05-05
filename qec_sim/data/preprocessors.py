@@ -15,6 +15,7 @@ class SpatialGridPreprocessor(BasePreprocessor):
         )
 
     def __init__(self, detector_coords: dict, num_detectors: int, **kwargs):
+        super().__init__()
         self.num_detectors = num_detectors
 
         self._required_keys = ["syndromes"]
@@ -43,10 +44,11 @@ class SpatialGridPreprocessor(BasePreprocessor):
                 h_indices.append(int((y - min_y) // 2.0))
                 w_indices.append(int((x - min_x) // 2.0))
 
-        self.det_idx = torch.tensor(det_indices, dtype=torch.long)
-        self.c_idx = torch.tensor(c_indices, dtype=torch.long)
-        self.h_idx = torch.tensor(h_indices, dtype=torch.long)
-        self.w_idx = torch.tensor(w_indices, dtype=torch.long)
+        # persistent=False: state_dict 제외 + wrapper.to(device) 시 자동 이동.
+        self.register_buffer('det_idx', torch.tensor(det_indices, dtype=torch.long), persistent=False)
+        self.register_buffer('c_idx',   torch.tensor(c_indices,   dtype=torch.long), persistent=False)
+        self.register_buffer('h_idx',   torch.tensor(h_indices,   dtype=torch.long), persistent=False)
+        self.register_buffer('w_idx',   torch.tensor(w_indices,   dtype=torch.long), persistent=False)
 
     @property
     def required_data_keys(self) -> List[str]:
@@ -62,12 +64,6 @@ class SpatialGridPreprocessor(BasePreprocessor):
         batch_syn = batch_data["syndromes"]
         batch_size = batch_syn.size(0)
         device = batch_syn.device
-
-        if self.det_idx.device != device:
-            self.det_idx = self.det_idx.to(device)
-            self.c_idx = self.c_idx.to(device)
-            self.h_idx = self.h_idx.to(device)
-            self.w_idx = self.w_idx.to(device)
 
         grid = torch.full((batch_size, self.out_channels, self.grid_h, self.grid_w), -0.5, device=device)
         grid[:, self.c_idx, self.h_idx, self.w_idx] = batch_syn[:, self.det_idx]
@@ -97,6 +93,7 @@ class SoftGridPreprocessor(BasePreprocessor):
         )
 
     def __init__(self, ancilla_coords: dict, rounds: int, **kwargs):
+        super().__init__()
         self.rounds = rounds
         n_ancilla = len(ancilla_coords)
 
@@ -109,8 +106,8 @@ class SoftGridPreprocessor(BasePreprocessor):
         h_indices = [int((ancilla_coords[i][1] - min_y) / 2) for i in range(n_ancilla)]
         w_indices = [int((ancilla_coords[i][0] - min_x) / 2) for i in range(n_ancilla)]
 
-        self.h_idx = torch.tensor(h_indices, dtype=torch.long)
-        self.w_idx = torch.tensor(w_indices, dtype=torch.long)
+        self.register_buffer('h_idx', torch.tensor(h_indices, dtype=torch.long), persistent=False)
+        self.register_buffer('w_idx', torch.tensor(w_indices, dtype=torch.long), persistent=False)
 
     @property
     def required_data_keys(self) -> List[str]:
@@ -127,10 +124,6 @@ class SoftGridPreprocessor(BasePreprocessor):
         soft_meas = batch_data["soft_measurements"]
         batch_size = soft_meas.size(0)
         device = soft_meas.device
-
-        if self.h_idx.device != device:
-            self.h_idx = self.h_idx.to(device)
-            self.w_idx = self.w_idx.to(device)
 
         # soft detection events: round 0 그대로, round 1+ 는 soft XOR
         soft_r0 = soft_meas[:, 0:1, :]                                          # (B, 1, A)
@@ -154,6 +147,7 @@ class FlatPreprocessor(BasePreprocessor):
         return cls(num_detectors=circuit.num_detectors)
 
     def __init__(self, num_detectors: int, **kwargs):
+        super().__init__()
         self.num_detectors = num_detectors
         self._required_keys = ["syndromes"]
 
