@@ -65,6 +65,10 @@ class PauliPlusSimulator(BaseSimulator):
     def generate_data(self, shots: int) -> dict:
         return self._run(shots)
 
+    def reseed(self, seed) -> None:
+        """np.random.SeedSequence | int | None → 자체 rng 재생성."""
+        self.rng = np.random.default_rng(seed)
+
     def get_ancilla_coordinates(self) -> dict:
         """ancilla_order 기준 인덱스 → (x, y) 좌표 반환. SoftGridPreprocessor 초기화에 사용."""
         coords = self._layout.qubit_coords

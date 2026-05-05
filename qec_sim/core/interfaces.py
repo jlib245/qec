@@ -73,6 +73,16 @@ class BaseSimulator(ABC):
         """{'syndromes', 'observables', ...} 형태의 dict 반환"""
         pass
 
+    def reseed(self, seed) -> None:
+        """워커별 RNG 재시딩. DataLoader 멀티워커 환경에서 fork된 워커들이
+        동일한 RNG 상태를 공유하지 않도록 호출 (OnlineQECDataset.__iter__).
+
+        기본 구현은 no-op — global numpy random만 쓰는 시뮬레이터(예: stim 기반)는
+        worker_init_fn에서 이미 시드되므로 추가 작업 불필요.
+        자체 rng 인스턴스를 가진 시뮬레이터는 오버라이드.
+        """
+        pass
+
 
 class BaseDataStrategy(ABC):
     """[Level 3] 데이터 공급기"""

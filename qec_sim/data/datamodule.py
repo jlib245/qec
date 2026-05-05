@@ -154,6 +154,13 @@ class OnlineQECDataset(IterableDataset):
         else:
             num_workers = worker_info.num_workers
             worker_id = worker_info.id
+            # fork된 워커들은 simulator.rng 상태를 공유하므로 워커별 reseed 필수.
+            # PyTorch가 epoch마다 새 base_seed를 뽑으므로 epoch 간 다양성도 확보됨.
+            base_seed = torch.initial_seed() % (2 ** 32)
+            ss = np.random.SeedSequence([base_seed, worker_id])
+            sims = self.simulator_pool.get_all_simulators()
+            for sim, child in zip(sims, ss.spawn(len(sims))):
+                sim.reseed(child)
 
         if self.cover_all_simulators:
             yield from self._iter_all_simulators(num_workers, worker_id)
