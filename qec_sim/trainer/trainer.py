@@ -19,11 +19,18 @@ class Trainer:
         self.stop_training = False
 
     def train_epoch(self):
+        from tqdm.auto import tqdm
         self.model.train()
         total_loss = 0.0
         num_steps = 0
 
-        for step, (batch_dict, labels) in enumerate(self.train_loader):
+        # train_steps가 있으면 그걸 total로, 아니면 loader 길이 (가능할 때)
+        total = self.train_steps if self.train_steps else (
+            len(self.train_loader) if hasattr(self.train_loader, '__len__') else None
+        )
+        pbar = tqdm(self.train_loader, total=total, desc='train', leave=False, dynamic_ncols=True)
+
+        for step, (batch_dict, labels) in enumerate(pbar):
             if self.train_steps and step >= self.train_steps:
                 break
 
@@ -38,6 +45,8 @@ class Trainer:
 
             total_loss += loss.item()
             num_steps += 1
+            if num_steps % 10 == 0:
+                pbar.set_postfix(loss=f"{total_loss/num_steps:.4f}")
 
         return total_loss / max(num_steps, 1)
 

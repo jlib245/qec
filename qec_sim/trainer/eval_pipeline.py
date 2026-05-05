@@ -31,7 +31,7 @@ class EvaluationPipeline:
         os.makedirs(root, exist_ok=True)
         return root
 
-    def run(self, shots: int = 10000):
+    def run(self, shots: int):
         import sys
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         log_dir = self._resolve_output_dir(timestamp)
@@ -58,7 +58,7 @@ class EvaluationPipeline:
         wrapped_model.eval()
 
         coset_lut = None
-        if getattr(self.config.model, 'coset_mode', False) and circuit is not None:
+        if self.config.model.coset_mode and circuit is not None:
             from qec_sim.decoders.lut import build_detector_lut
             coset_lut = build_detector_lut(circuit)
 
@@ -74,7 +74,9 @@ class EvaluationPipeline:
 
         # 1. 시뮬레이터 목록 구성 (backend에 따라 분기)
         from qec_sim.trainer.factory import _build_simulator_pool
-        backend = self.config.simulation.get('backend', 'stim')
+        if 'backend' not in self.config.simulation:
+            raise KeyError("simulation.backend는 yaml에 명시되어야 합니다 ('stim' 또는 'pauli_plus').")
+        backend = self.config.simulation['backend']
         results = []
         model_dir = self._resolve_output_dir(timestamp)
 
@@ -94,16 +96,16 @@ class EvaluationPipeline:
             from qec_sim.circuit.pauli_plus import PauliPlusSimulator
             from qec_sim.config.schema import NoiseParams
             noise_configs = self.config.get_expanded_pauli_plus_configs()
-            pp_cfg_keys = list(self.config.simulation.get('pauli_plus', {}).keys())
+            if 'pauli_plus' not in self.config.simulation:
+                raise KeyError("backend='pauli_plus'인 경우 simulation.pauli_plus 블록이 필요합니다.")
+            pp_cfg_keys = list(self.config.simulation['pauli_plus'].keys())
             simulators_with_labels = []
             for noise in noise_configs:
                 sim = PauliPlusSimulator(self.config.code, noise)
                 label = {k: getattr(noise, k) for k in pp_cfg_keys if hasattr(noise, k)}
                 # MWPM의 DEM 또는 coset LUT 생성에 stim 회로가 필요.
                 # leakage/crosstalk은 DEM에 표현 불가 — Pauli만 본다.
-                needs_circuit = decoder_name == "mwpm" or getattr(
-                    self.config.model, 'coset_mode', False
-                )
+                needs_circuit = decoder_name == "mwpm" or self.config.model.coset_mode
                 proxy_circuit = None
                 if needs_circuit:
                     proxy_circuit = build_circuit(

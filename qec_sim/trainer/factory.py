@@ -20,20 +20,25 @@ class ComponentFactory:
             noise_configs[0]
         ).build()
 
-        # 1. 모델 클래스 확인 → 필요한 전처리기 이름 조회
+        # 1. 모델 클래스 확인 → 필요한 전처리기 이름 조회 (모든 모델은 클래스 속성으로 명시).
         core_model_cls = get_model_class(config.model.name)
-        preprocessor_name = getattr(core_model_cls, 'REQUIRED_PREPROCESSOR', 'flat')
+        if not hasattr(core_model_cls, 'REQUIRED_PREPROCESSOR'):
+            raise AttributeError(
+                f"모델 '{config.model.name}'에 REQUIRED_PREPROCESSOR 클래스 속성이 없습니다."
+            )
+        preprocessor_name = core_model_cls.REQUIRED_PREPROCESSOR
 
-        # 2. simulator_pool 미리 빌드 (online 모드 또는 preprocessor가 필요로 할 때)
+        # 2. simulator_pool 미리 빌드 (online 모드는 학습 데이터 생성용,
+        # offline 모드는 preprocessor가 ancilla 좌표 같은 메타데이터를 풀에서 추출하므로 필요)
         data_mode = config.training.data_mode
-        simulator_pool = _build_simulator_pool(config) if data_mode == "online" else None
+        simulator_pool = _build_simulator_pool(config)
 
         # 3. 전처리기 생성 (각 클래스가 from_config로 필요한 정보 직접 추출)
         preprocessor_cls = get_preprocessor_class(preprocessor_name)
         preprocessor = preprocessor_cls.from_config(config, circuit, simulator_pool)
 
         # 3.5. Coset mode: DEM에서 LUT 생성
-        coset_mode = getattr(config.model, 'coset_mode', False)
+        coset_mode = config.model.coset_mode
         coset_lut = None
         if coset_mode:
             from qec_sim.decoders.lut import build_detector_lut
@@ -83,7 +88,9 @@ def _build_simulator_pool(config: ExperimentConfig) -> SimulatorPool:
       stim (기본값): 기존 Stim 기반 CircuitNoiseSimulator
       pauli_plus:    PauliPlusSimulator (Phase 1+2)
     """
-    backend = config.simulation.get('backend', 'stim')
+    if 'backend' not in config.simulation:
+        raise KeyError("simulation.backend는 yaml에 명시되어야 합니다 ('stim' 또는 'pauli_plus').")
+    backend = config.simulation['backend']
 
     if backend == 'stim':
         noise_configs = config.get_expanded_noise_configs()
