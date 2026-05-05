@@ -7,7 +7,6 @@ noise:
   p_gate: [0.006, 0.007, 0.008, 0.009, 0.01, 0.011, 0.012, 0.013, 0.014, 0.015]
   p_meas: 0.0001
   p_corr: 0.001
-  p_leak: [0.005, 0.01, 0.015]
 
 # [학습 설정]
 training:
@@ -47,7 +46,7 @@ training:
 
 # [모델 설정]
 model:
-  name: "erasure_mlp"
+  name: "mlp"
   kwargs:
     hidden_dim: 512
 
@@ -59,4 +58,4 @@ decoder:
   name: "neural_decoder"
   weight_path: "results/mlp_experiment_offline/best_model.pth"
   model_kwargs:
-    model_name: "erasure_mlp"
+    model_name: "mlp"

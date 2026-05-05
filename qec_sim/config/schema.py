@@ -18,7 +18,6 @@ class NoiseParams:
     p_gate: Union[float, List[float]]
     p_meas: Union[float, List[float]]
     p_corr: Union[float, List[float]]
-    p_leak: Union[float, List[float]]
 
 
 @dataclass
@@ -120,7 +119,6 @@ class TrainingConfig:
 @dataclass
 class ModelConfig:
     name: str
-    use_erasures: bool = True
     coset_mode: bool = False
     kwargs: Dict[str, Any] = field(default_factory=dict)
     preprocessor: Dict[str, Any] = field(default_factory=dict)
@@ -164,7 +162,7 @@ class ExperimentConfig:
     def get_expanded_noise_configs(self) -> List[NoiseParams]:
         """리스트 형태 노이즈 설정을 Cartesian Product로 확장합니다."""
         n = self.noise
-        keys = ['p_gate', 'p_meas', 'p_corr', 'p_leak']
+        keys = ['p_gate', 'p_meas', 'p_corr']
         values = [
             getattr(n, k) if isinstance(getattr(n, k), list) else [getattr(n, k)]
             for k in keys

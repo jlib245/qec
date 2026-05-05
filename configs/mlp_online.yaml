@@ -9,7 +9,6 @@ noise:
   p_gate: [0.001, 0.005, 0.01]
   p_meas: 0.005
   p_corr: [0.001, 0.002]
-  p_leak: [0.001, 0.01, 0.03]
 
 # [시뮬레이션 설정] (평가 시 사용)
 simulation:
@@ -43,7 +42,7 @@ training:
 
 # [모델 설정]
 model:
-  name: "erasure_mlp"
+  name: "mlp"
   kwargs:
     hidden_dim: 512
 

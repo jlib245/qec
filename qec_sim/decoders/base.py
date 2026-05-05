@@ -33,13 +33,12 @@ class BaseDecoder(ABC):
                 self._fault_id_to_qubits[fault_id] = list(coords)
 
     @abstractmethod
-    def decode_batch(self, syndromes: np.ndarray, erasures: np.ndarray = None) -> np.ndarray:
+    def decode_batch(self, syndromes: np.ndarray) -> np.ndarray:
         """
-        주어진 신드롬과 누설(erasure) 맵을 기반으로 논리적 에러를 예측합니다.
+        주어진 신드롬을 기반으로 논리적 에러를 예측합니다.
 
         Args:
             syndromes (np.ndarray): (Batch, Num_Detectors) 형태의 에러 신드롬 배열
-            erasures (np.ndarray, optional): (Batch, Num_Detectors) 형태의 누설 맵. Defaults to None.
 
         Returns:
             np.ndarray: (Batch, Num_Observables) 형태의 논리적 에러 예측값

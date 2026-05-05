@@ -37,7 +37,7 @@ class DatasetGenerator:
             if config_shots == 0:
                 continue
 
-            print(f"  -> 환경 {i+1}/{num_configs} (p_gate:{simulator.noise.p_gate:.4f}, p_leak:{simulator.noise.p_leak:.4f} 등): {config_shots}샷 생성 중")
+            print(f"  -> 환경 {i+1}/{num_configs} (p_gate:{simulator.noise.p_gate:.4f}, p_meas:{simulator.noise.p_meas:.4f} 등): {config_shots}샷 생성 중")
 
             config_generated = 0
             while config_generated < config_shots:

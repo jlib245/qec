@@ -30,7 +30,6 @@ class SurfaceCodeBuilder(BaseCircuitBuilder):
         self.p_gate = noise_params.p_gate[0] if isinstance(noise_params.p_gate, list) else noise_params.p_gate
         self.p_meas = noise_params.p_meas[0] if isinstance(noise_params.p_meas, list) else noise_params.p_meas
         self.p_corr = noise_params.p_corr[0] if isinstance(noise_params.p_corr, list) else noise_params.p_corr
-        self.p_leak = noise_params.p_leak[0] if isinstance(noise_params.p_leak, list) else noise_params.p_leak
 
     def build(self) -> stim.Circuit:
         """
@@ -43,7 +42,6 @@ class SurfaceCodeBuilder(BaseCircuitBuilder):
             rounds=self.code_params.rounds,
             after_clifford_depolarization=self.p_gate,
             before_measure_flip_probability=self.p_meas,
-            # p_leak은 simulator.py에서 별도 후처리, -> Herald Erasure로 처리 가능..? -> but 회로 다 뜯어야 할 것
             # p_corr은 현재 미구현.
         )
         return circuit

@@ -4,8 +4,8 @@ from qec_sim.core.interfaces import BaseQECModel
 from qec_sim.models.registry import register_model
 
 
-@register_model("erasure_mlp")
-class ErasureAwareMLP(BaseQECModel):
+@register_model("mlp")
+class MLPDecoder(BaseQECModel):
     REQUIRED_PREPROCESSOR = "flat"
 
     def __init__(self, input_dim: int, num_observables: int, hidden_dim: int = 256, **kwargs):

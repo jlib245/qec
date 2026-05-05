@@ -234,8 +234,6 @@ class PauliPlusSimulator(BaseSimulator):
         for i in layout.logical_z_data_indices:
             logical[:, 0] ^= data_meas[:, i]
 
-        erasures = np.zeros_like(syndromes, dtype=bool)
-
         # soft_measurements: (shots, rounds, n_ancilla) float — IQ on일 때만
         if use_iq and soft_meas_rounds:
             soft_measurements = np.stack(soft_meas_rounds, axis=1)
@@ -245,7 +243,6 @@ class PauliPlusSimulator(BaseSimulator):
         return {
             'syndromes':         syndromes,
             'observables':       logical,
-            'erasures':          erasures,
             'soft_measurements': soft_measurements,
             'leakage_flags':     None,   # Phase 3
         }

@@ -9,7 +9,7 @@ from qec_sim.config.schema import ExperimentConfig
 from qec_sim.trainer.factory import ComponentFactory
 from qec_sim.circuit.registry import build_circuit
 from qec_sim.circuit.simulator import CircuitNoiseSimulator
-from qec_sim.decoders.mwpm import ErasureMWPM
+from qec_sim.decoders.mwpm import MWPMDecoder
 from qec_sim.decoders.neural import NeuralDecoder
 
 
@@ -78,7 +78,7 @@ class EvaluationPipeline:
                 ).build()
                 sim = CircuitNoiseSimulator(circuit, noise_cfg)
                 label = {"p_gate": noise_cfg.p_gate, "p_meas": noise_cfg.p_meas,
-                         "p_corr": noise_cfg.p_corr, "p_leak": noise_cfg.p_leak}
+                         "p_corr": noise_cfg.p_corr}
                 simulators_with_labels.append((sim, label, circuit))
         else:
             # pauli_plus: 단일 시뮬레이터
@@ -103,20 +103,16 @@ class EvaluationPipeline:
 
         for sim, label, circuit in simulators_with_labels:
             raw = sim.generate_data(shots=shots)
-            syndromes, observables, erasures = raw['syndromes'], raw['observables'], raw['erasures']
+            syndromes, observables = raw['syndromes'], raw['observables']
 
             if decoder_name == "neural_decoder":
-                preds = neural_decoder.decode_batch(
-                    syndromes,
-                    erasures=erasures if self.config.model.use_erasures else None,
-                    batch_size=4096,
-                )
+                preds = neural_decoder.decode_batch(syndromes, batch_size=4096)
             elif decoder_name == "mwpm":
                 if circuit is None:
                     raise ValueError("mwpm decoder는 stim backend에서만 지원됩니다.")
                 dem = circuit.detector_error_model(decompose_errors=True)
-                mwpm = ErasureMWPM(error_model=dem)
-                preds = mwpm.decode_batch(syndromes, erasures=erasures)
+                mwpm = MWPMDecoder(error_model=dem)
+                preds = mwpm.decode_batch(syndromes)
             else:
                 raise ValueError(f"지원하지 않는 decoder: {decoder_name}")
 

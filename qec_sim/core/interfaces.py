@@ -70,7 +70,7 @@ class BaseSimulator(ABC):
 
     @abstractmethod
     def generate_data(self, shots: int) -> Dict[str, np.ndarray]:
-        """{'syndromes', 'observables', 'erasures', ...} 형태의 dict 반환"""
+        """{'syndromes', 'observables', ...} 형태의 dict 반환"""
         pass
 
 

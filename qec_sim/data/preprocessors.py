@@ -12,16 +12,12 @@ class SpatialGridPreprocessor(BasePreprocessor):
         return cls(
             detector_coords=circuit.get_detector_coordinates(),
             num_detectors=circuit.num_detectors,
-            use_erasures=config.model.use_erasures,
         )
 
-    def __init__(self, detector_coords: dict, num_detectors: int, use_erasures: bool = True, **kwargs):
+    def __init__(self, detector_coords: dict, num_detectors: int, **kwargs):
         self.num_detectors = num_detectors
-        self.use_erasures = use_erasures
 
         self._required_keys = ["syndromes"]
-        if self.use_erasures:
-            self._required_keys.append("erasures")
 
         all_x = [c[0] for c in detector_coords.values()]
         all_y = [c[1] for c in detector_coords.values()]
@@ -33,7 +29,7 @@ class SpatialGridPreprocessor(BasePreprocessor):
 
         unique_t = sorted(list(set(all_t)))
         self.input_depth = len(unique_t)
-        self.out_channels = self.input_depth * (2 if self.use_erasures else 1)
+        self.out_channels = self.input_depth
 
         det_indices, c_indices, h_indices, w_indices = [], [], [], []
         t_map = {t: i for i, t in enumerate(unique_t)}
@@ -75,9 +71,6 @@ class SpatialGridPreprocessor(BasePreprocessor):
 
         grid = torch.full((batch_size, self.out_channels, self.grid_h, self.grid_w), -0.5, device=device)
         grid[:, self.c_idx, self.h_idx, self.w_idx] = batch_syn[:, self.det_idx]
-
-        if self.use_erasures and "erasures" in batch_data:
-            grid[:, self.c_idx + self.input_depth, self.h_idx, self.w_idx] = batch_data["erasures"][:, self.det_idx]
 
         return grid
 
@@ -154,35 +147,25 @@ class SoftGridPreprocessor(BasePreprocessor):
 
 @register_preprocessor("flat")
 class FlatPreprocessor(BasePreprocessor):
-    """MLP 계열 모델용 flat 전처리기. syndromes과 erasures를 이어붙여 1D 텐서로 반환합니다."""
+    """MLP 계열 모델용 flat 전처리기. syndromes을 1D 텐서로 반환합니다."""
 
     @classmethod
     def from_config(cls, config, circuit, simulator_pool=None):
-        return cls(
-            num_detectors=circuit.num_detectors,
-            use_erasures=config.model.use_erasures,
-        )
+        return cls(num_detectors=circuit.num_detectors)
 
-    def __init__(self, num_detectors: int, use_erasures: bool = True, **kwargs):
+    def __init__(self, num_detectors: int, **kwargs):
         self.num_detectors = num_detectors
-        self.use_erasures = use_erasures
         self._required_keys = ["syndromes"]
-        if use_erasures:
-            self._required_keys.append("erasures")
 
     @property
     def required_data_keys(self) -> List[str]:
         return self._required_keys
 
     def get_model_kwargs(self) -> Dict[str, Any]:
-        multiplier = 2 if self.use_erasures else 1
-        return {"input_dim": self.num_detectors * multiplier}
+        return {"input_dim": self.num_detectors}
 
     def cpu_transform(self, raw_sample: Dict[str, Any]) -> Dict[str, Any]:
         return raw_sample
 
     def gpu_transform(self, batch_data: Dict[str, torch.Tensor]) -> torch.Tensor:
-        tensors = [batch_data["syndromes"].float()]
-        if self.use_erasures and "erasures" in batch_data:
-            tensors.append(batch_data["erasures"].float())
-        return torch.cat(tensors, dim=-1)
+        return batch_data["syndromes"].float()
