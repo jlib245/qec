@@ -88,7 +88,7 @@ class PauliPlusSimulator(BaseSimulator):
         frame = PauliFrame(shots, layout.n_qubits)
 
         # --- 초기화: 모든 큐빗 리셋 + 리셋 노이즈 ---
-        _reset(frame, layout.all_qubits, noise.p_reset, rng)
+        _reset(frame, layout.all_qubits_arr, noise.p_reset, rng)
 
         # 측정 기록
         ancilla_meas     = []                    # hard: (shots, n_ancilla) bool
@@ -198,7 +198,7 @@ class PauliPlusSimulator(BaseSimulator):
                 soft_meas_rounds.append(post1_meas)
 
             # 6. 리셋 ancilla + leakage removal
-            _reset(frame, layout.ancilla_order, noise.p_reset, rng)
+            _reset(frame, anc_order, noise.p_reset, rng)
             if noise.leakage_removal_after_reset:
                 remove_leakage(frame, layout.ancilla_order, rng)
 
@@ -257,10 +257,12 @@ class PauliPlusSimulator(BaseSimulator):
 # ------------------------------------------------------------------ #
 
 def _reset(frame: PauliFrame, qubits, p: float, rng):
-    """Reset to |0⟩ (clear frame), then apply bitflip noise."""
-    for q in qubits:
-        frame.frame[:, q] = 0
-        bitflip(frame, q, p, rng)
+    """Reset to |0⟩ (frame 클리어) + bitflip 노이즈. qubits는 np.int32 배열 권장."""
+    q_arr = qubits if isinstance(qubits, np.ndarray) else np.array(qubits, dtype=np.int32)
+    frame.frame[:, q_arr] = 0
+    if p > 0:
+        bitflip_batch_nb(frame.frame, q_arr, p,
+                         rng.random((frame.n_shots, len(q_arr))), PAULI_MUL)
 
 
 # ------------------------------------------------------------------ #
@@ -320,6 +322,7 @@ class _SurfaceCodeLayout:
 
         # all_qubits = frame에서 사용하는 모든 qubit 인덱스
         self.all_qubits = list(coords.keys())
+        self.all_qubits_arr = np.array(self.all_qubits, dtype=np.int32)
 
         # CX layers: 4 sub-layers, 순서 보존
         self.cx_layers = self._get_cx_layers(circ)
