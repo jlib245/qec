@@ -221,5 +221,6 @@ experiments/
 datasets/
 Final_Results_/
 results/
+configs/
 
 .claude/configs/
