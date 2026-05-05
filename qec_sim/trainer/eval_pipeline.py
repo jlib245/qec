@@ -92,14 +92,26 @@ class EvaluationPipeline:
         else:
             # pauli_plus: list-valued 필드를 Cartesian product로 확장
             from qec_sim.circuit.pauli_plus import PauliPlusSimulator
+            from qec_sim.config.schema import NoiseParams
             noise_configs = self.config.get_expanded_pauli_plus_configs()
             pp_cfg_keys = list(self.config.simulation.get('pauli_plus', {}).keys())
             simulators_with_labels = []
             for noise in noise_configs:
                 sim = PauliPlusSimulator(self.config.code, noise)
-                # YAML에서 명시된 필드만 라벨로 사용
                 label = {k: getattr(noise, k) for k in pp_cfg_keys if hasattr(noise, k)}
-                simulators_with_labels.append((sim, label, None))
+                # MWPM의 DEM 또는 coset LUT 생성에 stim 회로가 필요.
+                # leakage/crosstalk은 DEM에 표현 불가 — Pauli만 본다.
+                needs_circuit = decoder_name == "mwpm" or getattr(
+                    self.config.model, 'coset_mode', False
+                )
+                proxy_circuit = None
+                if needs_circuit:
+                    proxy_circuit = build_circuit(
+                        self.config.code.name,
+                        self.config.code,
+                        NoiseParams(p_gate=noise.p_2q, p_meas=noise.p_meas, p_corr=0.0),
+                    ).build()
+                simulators_with_labels.append((sim, label, proxy_circuit))
 
         # 2. neural_decoder는 모델을 미리 로드 (첫 circuit으로 LUT 생성)
         neural_decoder = None
@@ -116,7 +128,10 @@ class EvaluationPipeline:
             syndromes, observables = raw['syndromes'], raw['observables']
 
             if decoder_name == "neural_decoder":
-                preds = neural_decoder.decode_batch(syndromes, batch_size=4096)
+                preds = neural_decoder.decode_batch(
+                    syndromes, batch_size=4096,
+                    soft_measurements=raw.get('soft_measurements'),
+                )
             elif decoder_name == "mwpm":
                 if circuit is None:
                     raise ValueError("mwpm decoder는 stim backend에서만 지원됩니다.")

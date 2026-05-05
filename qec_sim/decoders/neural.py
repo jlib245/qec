@@ -24,7 +24,8 @@ class NeuralDecoder(BaseDecoder):
         self.device = next(self.model.parameters()).device
         self.coset_lut = coset_lut
 
-    def decode_batch(self, syndromes: np.ndarray, batch_size: int = 4096) -> np.ndarray:
+    def decode_batch(self, syndromes: np.ndarray, batch_size: int = 4096,
+                     soft_measurements: np.ndarray = None) -> np.ndarray:
         n = len(syndromes)
         all_preds = []
         for start in range(0, n, batch_size):
@@ -32,6 +33,10 @@ class NeuralDecoder(BaseDecoder):
             batch_dict = {
                 'syndromes': torch.tensor(syndromes[start:end], dtype=torch.float32).to(self.device)
             }
+            if soft_measurements is not None:
+                batch_dict['soft_measurements'] = torch.tensor(
+                    soft_measurements[start:end], dtype=torch.float32
+                ).to(self.device)
 
             with torch.no_grad():
                 logits = self.model(batch_dict)
