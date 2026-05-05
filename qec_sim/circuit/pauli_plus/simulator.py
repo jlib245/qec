@@ -171,11 +171,11 @@ class PauliPlusSimulator(BaseSimulator):
             if noise.p_resonator_idle > 0:
                 depolarize1_batch_nb(frame.frame, data_arr, noise.p_resonator_idle,
                                      rng.random((shots, n_data)), pm)
-            # Phase 2: passive T1 decay (per qubit — 그대로 유지)
+            # Phase 2: passive T1 decay (data qubits 일괄 처리)
             if noise.passive_decay_T1_us > 0:
-                for q in layout.data_qubits:
-                    apply_passive_decay(frame, [q], noise.passive_decay_T1_us,
-                                        t_us=0.5, rng=rng)
+                apply_passive_decay(frame, layout.data_arr,
+                                    noise.passive_decay_T1_us,
+                                    t_us=0.5, rng=rng)
 
             # 5. Measure ancilla in Z + IQ noise
             if use_iq:
