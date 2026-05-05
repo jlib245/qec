@@ -81,15 +81,16 @@ class EvaluationPipeline:
                          "p_corr": noise_cfg.p_corr}
                 simulators_with_labels.append((sim, label, circuit))
         else:
-            # pauli_plus: 단일 시뮬레이터
-            pp_cfg = self.config.simulation.get('pauli_plus', {})
-            from qec_sim.config.schema import PauliPlusNoiseParams
+            # pauli_plus: list-valued 필드를 Cartesian product로 확장
             from qec_sim.circuit.pauli_plus import PauliPlusSimulator
-            noise = PauliPlusNoiseParams(**pp_cfg)
-            sim = PauliPlusSimulator(self.config.code, noise)
-            label = {"p": noise.p, "cz_dephasing_leakage": noise.cz_dephasing_leakage,
-                     "heating_rate_per_us": noise.heating_rate_per_us}
-            simulators_with_labels = [(sim, label, None)]
+            noise_configs = self.config.get_expanded_pauli_plus_configs()
+            pp_cfg_keys = list(self.config.simulation.get('pauli_plus', {}).keys())
+            simulators_with_labels = []
+            for noise in noise_configs:
+                sim = PauliPlusSimulator(self.config.code, noise)
+                # YAML에서 명시된 필드만 라벨로 사용
+                label = {k: getattr(noise, k) for k in pp_cfg_keys if hasattr(noise, k)}
+                simulators_with_labels.append((sim, label, None))
 
         # 2. neural_decoder는 모델을 미리 로드 (첫 circuit으로 LUT 생성)
         neural_decoder = None

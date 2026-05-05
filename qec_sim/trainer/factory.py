@@ -91,10 +91,9 @@ def _build_simulator_pool(config: ExperimentConfig) -> SimulatorPool:
 
     elif backend == 'pauli_plus':
         from qec_sim.circuit.pauli_plus import PauliPlusSimulator
-        pp_cfg = config.simulation.get('pauli_plus', {})
-        noise = PauliPlusNoiseParams(**pp_cfg)
-        sim = PauliPlusSimulator(config.code, noise)
-        return SimulatorPool([sim])
+        noise_configs = config.get_expanded_pauli_plus_configs()
+        sims = [PauliPlusSimulator(config.code, n) for n in noise_configs]
+        return SimulatorPool(sims)
 
     else:
         raise ValueError(f"알 수 없는 simulation backend: '{backend}'. 'stim' 또는 'pauli_plus'를 사용하세요.")

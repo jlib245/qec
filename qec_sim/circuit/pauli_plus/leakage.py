@@ -18,8 +18,7 @@ States: I=0, X=1, Y=2, Z=3, L2=4, L3=5
 
 import numpy as np
 import numba
-from .frame import PauliFrame, I, X, Y, Z, L2, L3
-from .channels import depolarize1
+from .frame import PauliFrame
 
 
 # ------------------------------------------------------------------ #
@@ -111,55 +110,6 @@ def _apply_heating_nb(frame, qubits, p, rand):
                 frame[i, q] = np.int8(4)  # L2
 
 
-def apply_cz_leakage(frame: PauliFrame, ctrl: int, tgt: int,
-                     p_leakage: float, rng: np.random.Generator):
-    """
-    경로 A: CZ 게이트 중 dephasing leakage.
-    각 큐빗이 독립적으로 확률 p_leakage로 L2로 전이.
-    leaked → non-leaked 큐빗에는 1q depolarizing 적용 (Pauli+ spec).
-    """
-    if p_leakage <= 0:
-        return
-
-    fc = frame.frame[:, ctrl]
-    ft = frame.frame[:, tgt]
-
-    ctrl_normal = fc < 4
-    tgt_normal  = ft < 4
-
-    # 전이 발생 여부
-    ctrl_leaks = ctrl_normal & (rng.random(frame.n_shots) < p_leakage)
-    tgt_leaks  = tgt_normal  & (rng.random(frame.n_shots) < p_leakage)
-
-    # leaked → non-leaked: non-leaked 큐빗에 1q depolarizing
-    # (이미 apply_cx에서 Clifford 적용 완료됐으므로 noise만 추가)
-    depolarize1(frame, tgt,  p=0.5, rng=rng,
-                mask=ctrl_leaks & tgt_normal & ~tgt_leaks)
-    depolarize1(frame, ctrl, p=0.5, rng=rng,
-                mask=tgt_leaks & ctrl_normal & ~ctrl_leaks)
-
-    # 전이 적용: leaked 큐빗은 L2로, frame의 Pauli 정보는 소실
-    frame.frame[ctrl_leaks, ctrl] = L2
-    frame.frame[tgt_leaks,  tgt]  = L2
-
-
-def apply_heating(frame: PauliFrame, qubit: int,
-                  heating_rate_per_us: float, gate_time_us: float,
-                  rng: np.random.Generator):
-    """
-    경로 B: 열적 여기 (heating).
-    확률 rate * gate_time 으로 computational 큐빗이 L2로 전이.
-    """
-    p = heating_rate_per_us * gate_time_us
-    if p <= 0:
-        return
-
-    f = frame.frame[:, qubit]
-    normal = f < 4
-    leaks  = normal & (rng.random(frame.n_shots) < p)
-    frame.frame[leaks, qubit] = L2
-
-
 def remove_leakage(frame: PauliFrame, qubits,
                    rng: np.random.Generator):
     """
@@ -186,8 +136,3 @@ def apply_passive_decay(frame: PauliFrame, qubits: list,
     q_arr = qubits if isinstance(qubits, np.ndarray) else np.array(qubits, dtype=np.int32)
     _apply_passive_decay_nb(frame.frame, q_arr, p_decay,
                             rng.random((frame.n_shots, len(q_arr))))
-
-
-def leaked_mask(frame: PauliFrame, qubit: int) -> np.ndarray:
-    """(n_shots,) bool: 해당 qubit이 leaked 상태인 shot."""
-    return frame.frame[:, qubit] >= 4

@@ -28,12 +28,9 @@ from .frame import PauliFrame, _CX_C, _CX_T, apply_h_batch_nb, apply_cx_layer_nb
 from .channels import (depolarize1, depolarize2, bitflip,
                        depolarize1_batch_nb, depolarize2_layer_nb, bitflip_batch_nb,
                        PAULI_MUL, _PAULI_PAIRS)
-from .leakage import (apply_cz_leakage, apply_heating,
-                      remove_leakage, apply_passive_decay,
+from .leakage import (remove_leakage, apply_passive_decay,
                       _apply_cz_leakage_layer_nb, _apply_heating_nb)
-from .iq_noise import (get_true_z_state, sample_iq, compute_posterior,
-                       soft_xor_consecutive, threshold,
-                       _get_true_z_state_batch_nb, _sample_iq_batch_nb,
+from .iq_noise import (_get_true_z_state_batch_nb, _sample_iq_batch_nb,
                        _compute_posterior_batch_nb)
 from .crosstalk import apply_crosstalk
 
@@ -48,7 +45,7 @@ class PauliPlusSimulator(BaseSimulator):
 
         self._layout = _SurfaceCodeLayout(code_params.distance, code_params.rounds)
         self._nd = self._layout.num_detectors
-        self._no = 1  # Z-memory: single logical observable
+        self._no = self._layout.num_observables
 
     # ------------------------------------------------------------------ #
     # BaseSimulator interface                                              #
@@ -108,7 +105,7 @@ class PauliPlusSimulator(BaseSimulator):
         n_anc     = layout.n_ancilla
         n_data    = layout.n_data
         p_decay   = 1.0 - np.exp(-noise.t_meas_over_T1) if noise.t_meas_over_T1 > 0 else 0.0
-        p_heat    = noise.heating_rate_per_us * 0.05
+        p_heat    = noise.heating_rate_per_us * noise.t_cx_us
 
         for r in range(rounds):
             # 1. H on X-ancilla (배치) + 1q gate noise (배치)
@@ -171,11 +168,11 @@ class PauliPlusSimulator(BaseSimulator):
             if noise.p_resonator_idle > 0:
                 depolarize1_batch_nb(frame.frame, data_arr, noise.p_resonator_idle,
                                      rng.random((shots, n_data)), pm)
-            # Phase 2: passive T1 decay (data qubits 일괄 처리)
+            # Phase 2: passive T1 decay (data qubits 일괄 처리, 측정 중 시간)
             if noise.passive_decay_T1_us > 0:
                 apply_passive_decay(frame, layout.data_arr,
                                     noise.passive_decay_T1_us,
-                                    t_us=0.5, rng=rng)
+                                    t_us=noise.t_meas_us, rng=rng)
 
             # 5. Measure ancilla in Z + IQ noise
             if use_iq:
@@ -234,7 +231,8 @@ class PauliPlusSimulator(BaseSimulator):
         syndromes = np.concatenate(det_list, axis=1)  # (shots, num_detectors)
 
         # --- logical observable: data_order에서 logical_z_indices XOR ---
-        logical = np.zeros((shots, 1), dtype=bool)
+        # rotated_memory_z는 single Z observable. 다른 코드 추가 시 layout 확장 필요.
+        logical = np.zeros((shots, self._no), dtype=bool)
         for i in layout.logical_z_data_indices:
             logical[:, 0] ^= data_meas[:, i]
 
@@ -286,6 +284,7 @@ class _SurfaceCodeLayout:
             before_measure_flip_probability=0,
         )
         self.n_qubits = circ.num_qubits
+        self.num_observables = circ.num_observables
         coords = circ.get_final_qubit_coordinates()
         self.qubit_coords = coords  # get_ancilla_coordinates() 재사용
 

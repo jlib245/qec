@@ -60,6 +60,11 @@ class PauliPlusNoiseParams:
     crosstalk_alpha: float = 0.25            # Bausch 스케일: 0.25, 원래: 1.0
     crosstalk_leakage_rate: float = 0.0      # crosstalk 유래 leakage 확률
 
+    # 게이트 시간 [μs] — heating(rate × time) 및 측정 중 T1 decay 계산에 사용.
+    # 기본값은 SI1000 표준 (CX 50 ns × 4 sub-layer = 200 ns/round, 측정 500 ns).
+    t_cx_us: float = 0.05                    # CX sub-layer 1개 시간
+    t_meas_us: float = 0.5                   # data qubit 측정 시간
+
     # 개별 강도 override (None이면 p 기반 derived 값 사용, 검증/디버깅용)
     p_idle_override: float | None = None
     p_resonator_idle_override: float | None = None
@@ -168,3 +173,21 @@ class ExperimentConfig:
             for k in keys
         ]
         return [NoiseParams(**dict(zip(keys, v))) for v in product(*values)]
+
+    def get_expanded_pauli_plus_configs(self) -> List["PauliPlusNoiseParams"]:
+        """simulation.pauli_plus의 list-valued 필드를 Cartesian product로 확장.
+        Stim 백엔드의 get_expanded_noise_configs와 동일한 컨벤션."""
+        pp_cfg = self.simulation.get('pauli_plus', {})
+        if not pp_cfg:
+            raise ValueError("simulation.pauli_plus 블록이 비어있습니다.")
+
+        list_fields = {k: v for k, v in pp_cfg.items() if isinstance(v, list)}
+        scalar_fields = {k: v for k, v in pp_cfg.items() if not isinstance(v, list)}
+
+        if not list_fields:
+            return [PauliPlusNoiseParams(**pp_cfg)]
+
+        keys = list(list_fields.keys())
+        values = [list_fields[k] for k in keys]
+        return [PauliPlusNoiseParams(**scalar_fields, **dict(zip(keys, combo)))
+                for combo in product(*values)]
