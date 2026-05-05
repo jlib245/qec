@@ -24,9 +24,9 @@ class TrainingPipeline:
         self.workspace = {}
 
     def _setup_workspace(self):
+        from qec_sim.trainer.utils import timestamped_output_dir
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        out = self.config.training.output_dir
-        root = os.path.join(os.path.dirname(out), f"{timestamp}_{os.path.basename(out)}")
+        root = timestamped_output_dir(self.config.training.output_dir, timestamp)
         os.makedirs(root, exist_ok=True)
         self.workspace = {
             "root":        root,

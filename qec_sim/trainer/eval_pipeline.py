@@ -26,8 +26,8 @@ class EvaluationPipeline:
         # 없으면 training.output_dir에 timestamp prefix 붙여 새로 생성.
         if self.model_path:
             return os.path.dirname(self.model_path)
-        out = self.config.training.output_dir
-        root = os.path.join(os.path.dirname(out), f"{timestamp}_{os.path.basename(out)}")
+        from qec_sim.trainer.utils import timestamped_output_dir
+        root = timestamped_output_dir(self.config.training.output_dir, timestamp)
         os.makedirs(root, exist_ok=True)
         return root
 

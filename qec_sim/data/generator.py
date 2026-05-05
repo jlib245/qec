@@ -54,7 +54,9 @@ class DatasetGenerator:
         print(f"[{filename}] 총 {shots:,}샷 생성을 시작 ({num_configs}개의 노이즈 환경)", flush=True)
         start_time = time.time()
 
-        # probe로 출력 키 + native dtype + shape 확인. None 값은 제외.
+        # 1샷 probe 결과로 버퍼 사전 할당 (이전 버전이 모든 키를 int8로 캐스트해
+        # soft IQ float이 손상됐던 버그 방지 — native dtype/shape를 시뮬에서 직접 추론).
+        # IQ off일 때 soft_measurements 같은 None 값은 키에서 제외.
         probe = simulators[0].generate_data(shots=1)
         present_keys = [k for k, v in probe.items() if isinstance(v, np.ndarray)]
 
