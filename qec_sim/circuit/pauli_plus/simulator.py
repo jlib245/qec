@@ -288,30 +288,19 @@ class _SurfaceCodeLayout:
         coords = circ.get_final_qubit_coordinates()
         self.qubit_coords = coords  # get_ancilla_coordinates() 재사용
 
-        # --- qubit 분류 ---
-        # data: both x,y odd;  ancilla: at least one even
-        x_ancilla_set = self._get_x_ancilla(circ)
-        data, z_anc, x_anc = [], [], []
-
-        for qi, (x, y) in sorted(coords.items()):
-            if int(x) % 2 == 1 and int(y) % 2 == 1:
-                data.append(qi)
-            elif qi in x_ancilla_set:
-                x_anc.append(qi)
-            else:
-                z_anc.append(qi)
-
-        self.data_qubits  = data
-        self.x_ancilla    = x_anc
-        self.z_ancilla    = z_anc
-        self.n_data       = len(data)
-        self.n_ancilla    = len(x_anc) + len(z_anc)
-
-        # ancilla_order = Stim MR 순서 (측정 기록을 stim 순서로 concat할 때 사용)
+        # --- qubit 분류 (회로 자체에서 추출 — 좌표 parity 의존 없음) ---
+        # ancilla = 첫 MR 명령의 targets, data = 최종 M 명령의 targets,
+        # X-ancilla = ancilla 중 H 받는 큐빗.
+        # 이 방식이 rotated CSS / unrotated / XZZX 등 어떤 stim 회로든 작동.
         self.ancilla_order = self._get_mr_order(circ)
-
-        # data_order = Stim M (최종 data 측정) 순서
         self.data_order = self._get_m_order(circ)
+
+        x_ancilla_set = self._get_x_ancilla(circ)
+        self.data_qubits = list(self.data_order)
+        self.x_ancilla = [q for q in self.ancilla_order if q in x_ancilla_set]
+        self.z_ancilla = [q for q in self.ancilla_order if q not in x_ancilla_set]
+        self.n_data = len(self.data_qubits)
+        self.n_ancilla = len(self.ancilla_order)
 
         # all_qubits = frame에서 사용하는 모든 qubit 인덱스
         self.all_qubits = list(coords.keys())
@@ -325,9 +314,9 @@ class _SurfaceCodeLayout:
         self.num_detectors = circ.num_detectors
 
         # --- 배치 연산용 numpy 배열 (미리 계산) ---
-        self.x_ancilla_arr    = np.array(x_anc,                dtype=np.int32)
+        self.x_ancilla_arr    = np.array(self.x_ancilla,       dtype=np.int32)
         self.ancilla_order_arr = np.array(self.ancilla_order,  dtype=np.int32)
-        self.data_arr         = np.array(data,                 dtype=np.int32)
+        self.data_arr         = np.array(self.data_qubits,     dtype=np.int32)
 
         # CX sub-layer별 (ctrls, tgts) numpy 배열
         self.cx_layer_arrays = [

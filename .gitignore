@@ -223,5 +223,6 @@ Final_Results_/
 results/
 configs/
 data/
+scripts/
 
 .claude/configs/
