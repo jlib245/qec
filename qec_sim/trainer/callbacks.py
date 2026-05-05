@@ -149,7 +149,7 @@ class Checkpoint(Callback):
 class EarlyStopping(Callback):
     """patience 에포크 동안 개선이 없으면 학습을 중단합니다."""
 
-    def __init__(self, patience: int = 0, monitor: str = 'val_loss'):
+    def __init__(self, patience: int, monitor: str = 'val_loss'):
         self.patience = patience
         self.monitor = monitor
         self.best_value = float('inf')
