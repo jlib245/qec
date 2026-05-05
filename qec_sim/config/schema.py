@@ -137,13 +137,28 @@ class DecoderConfig:
 
 
 @dataclass
+class SimulationConfig:
+    """`simulation:` yaml 블록의 타입 명시 표현.
+
+    backend: 'stim' 또는 'pauli_plus' (필수)
+    shots:   레거시 필드 (현재 코드에서는 미사용 — eval shots는 CLI 인자 사용)
+    pauli_plus: backend='pauli_plus'일 때 노이즈 dict.
+                list-valued 필드 cartesian 확장을 위해 raw dict 유지.
+                키는 PauliPlusNoiseParams 필드와 일치해야 함 (from_yaml에서 검증).
+    """
+    backend: str
+    shots: Optional[int] = None
+    pauli_plus: Optional[Dict[str, Any]] = None
+
+
+@dataclass
 class ExperimentConfig:
     code: CodeParams
     noise: NoiseParams
     training: TrainingConfig
     model: ModelConfig
     decoder: DecoderConfig
-    simulation: Dict[str, Any]
+    simulation: SimulationConfig
 
     @classmethod
     def from_yaml(cls, path: str):
@@ -155,13 +170,28 @@ class ExperimentConfig:
             valid_keys = {f.name for f in dc.fields(datacls)}
             return {k: v for k, v in raw.items() if k in valid_keys}
 
+        sim_raw = data['simulation']
+        sim = SimulationConfig(
+            backend=sim_raw['backend'],
+            shots=sim_raw.get('shots'),
+            pauli_plus=sim_raw.get('pauli_plus'),
+        )
+        if sim.pauli_plus is not None:
+            valid = {f.name for f in dc.fields(PauliPlusNoiseParams)}
+            unknown = set(sim.pauli_plus) - valid
+            if unknown:
+                raise KeyError(
+                    f"simulation.pauli_plus에 알 수 없는 키: {unknown}. "
+                    f"PauliPlusNoiseParams 필드: {sorted(valid)}"
+                )
+
         return cls(
             code=CodeParams(**filter_fields(CodeParams, data['code'])),
             noise=NoiseParams(**filter_fields(NoiseParams, data['noise'])),
             training=TrainingConfig(**filter_fields(TrainingConfig, data['training'])),
             model=ModelConfig(**filter_fields(ModelConfig, data['model'])),
             decoder=DecoderConfig(**filter_fields(DecoderConfig, data['decoder'])),
-            simulation=data['simulation']
+            simulation=sim,
         )
 
     def get_expanded_noise_configs(self) -> List[NoiseParams]:
@@ -177,9 +207,9 @@ class ExperimentConfig:
     def get_expanded_pauli_plus_configs(self) -> List["PauliPlusNoiseParams"]:
         """simulation.pauli_plus의 list-valued 필드를 Cartesian product로 확장.
         Stim 백엔드의 get_expanded_noise_configs와 동일한 컨벤션."""
-        if 'pauli_plus' not in self.simulation:
+        pp_cfg = self.simulation.pauli_plus
+        if pp_cfg is None:
             raise KeyError("simulation.pauli_plus 블록이 yaml에 없습니다.")
-        pp_cfg = self.simulation['pauli_plus']
         if not pp_cfg:
             raise ValueError("simulation.pauli_plus 블록이 비어있습니다.")
 

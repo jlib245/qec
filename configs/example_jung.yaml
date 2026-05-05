@@ -1,55 +1,56 @@
-# config.yaml
 code:
-  name: "surface_code"
+  name: surface_code
   distance: 5
   rounds: 5
-
 noise:
-  # 리스트로 제공하면 p_gate*p_meas*p_corr 개의 노이즈 환경으로 확장됩니다.
-  p_gate: [0.007, 0.008, 0.009, 0.010, 0.011, 0.012, 0.013, 0.014, 0.015]
+  p_gate:
+  - 0.007
+  - 0.008
+  - 0.009
+  - 0.01
+  - 0.011
+  - 0.012
+  - 0.013
+  - 0.014
+  - 0.015
   p_meas: 0.001
   p_corr: 0.0
-
 training:
-  data_mode: "offline"
-  train_path: "datasets/jung/train.npz"
-  val_path: "datasets/jung/val.npz"
+  data_mode: offline
+  train_path: datasets/jung/train.npz
+  val_path: datasets/jung/val.npz
   train_steps: 10000
   val_steps: 2000
   epochs: 50
   batch_size: 1024
   chunk_size: 50000
-
-  seed: 42                # 재현성을 위한 랜덤 시드 (null이면 비고정)
-  num_workers: 4          # 0으로 두면 메인 프로세스만 사용, 4~8 권장
-  prefetch_factor: 2      # num_workers가 1 이상일 때, 워커당 미리 만들어둘 배치의 수
-  pin_memory: true        # 데이터를 GPU로 보낼 때 속도 향상 (True 권장)
-
+  seed: 42
+  num_workers: 4
+  prefetch_factor: 2
+  pin_memory: true
   optimizer:
-    name: "Adam"
+    name: Adam
     kwargs:
       lr: 0.001
   criterion:
-    name: "bce_with_logits"  # 📌 필수 기입 (기본값 제거됨)
+    name: bce_with_logits
     kwargs: {}
-  output_dir: "./results/experiment"
+  output_dir: ./results/experiment
   early_stopping:
     patience: 15
   scheduler:
-    name: "ReduceLROnPlateau"
+    name: ReduceLROnPlateau
     kwargs:
-        mode: "min"
-        factor: 0.5
-        patience: 2
-
+      mode: min
+      factor: 0.5
+      patience: 2
 model:
-  name: "jung_cnn_low"
+  name: jung_cnn_low
   kwargs: {}
-
 decoder:
-  name: "neural_decoder"
-  weight_path: ""       # 학습 전이므로 비워둡니다 (평가 시에는 학습된 경로 입력)
+  name: neural_decoder
+  weight_path: ''
   model_kwargs: {}
-
 simulation:
   shots: 100000
+  backend: stim

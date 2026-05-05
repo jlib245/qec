@@ -74,9 +74,7 @@ class EvaluationPipeline:
 
         # 1. 시뮬레이터 목록 구성 (backend에 따라 분기)
         from qec_sim.trainer.factory import _build_simulator_pool
-        if 'backend' not in self.config.simulation:
-            raise KeyError("simulation.backend는 yaml에 명시되어야 합니다 ('stim' 또는 'pauli_plus').")
-        backend = self.config.simulation['backend']
+        backend = self.config.simulation.backend
         results = []
         model_dir = self._resolve_output_dir(timestamp)
 
@@ -96,9 +94,9 @@ class EvaluationPipeline:
             from qec_sim.circuit.pauli_plus import PauliPlusSimulator
             from qec_sim.config.schema import NoiseParams
             noise_configs = self.config.get_expanded_pauli_plus_configs()
-            if 'pauli_plus' not in self.config.simulation:
+            if self.config.simulation.pauli_plus is None:
                 raise KeyError("backend='pauli_plus'인 경우 simulation.pauli_plus 블록이 필요합니다.")
-            pp_cfg_keys = list(self.config.simulation['pauli_plus'].keys())
+            pp_cfg_keys = list(self.config.simulation.pauli_plus.keys())
             simulators_with_labels = []
             for noise in noise_configs:
                 sim = PauliPlusSimulator(self.config.code, noise)

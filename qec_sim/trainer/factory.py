@@ -88,9 +88,7 @@ def _build_simulator_pool(config: ExperimentConfig) -> SimulatorPool:
       stim (기본값): 기존 Stim 기반 CircuitNoiseSimulator
       pauli_plus:    PauliPlusSimulator (Phase 1+2)
     """
-    if 'backend' not in config.simulation:
-        raise KeyError("simulation.backend는 yaml에 명시되어야 합니다 ('stim' 또는 'pauli_plus').")
-    backend = config.simulation['backend']
+    backend = config.simulation.backend
 
     if backend == 'stim':
         noise_configs = config.get_expanded_noise_configs()
