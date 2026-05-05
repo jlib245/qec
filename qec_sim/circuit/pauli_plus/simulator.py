@@ -32,7 +32,7 @@ from .leakage import (remove_leakage, apply_passive_decay,
                       _apply_cz_leakage_layer_nb, _apply_heating_nb)
 from .iq_noise import (_get_true_z_state_batch_nb, _sample_iq_batch_nb,
                        _compute_posterior_batch_nb)
-from .crosstalk import apply_crosstalk
+from .crosstalk import apply_crosstalk, build_crosstalk_arrays
 
 
 class PauliPlusSimulator(BaseSimulator):
@@ -151,8 +151,10 @@ class PauliPlusSimulator(BaseSimulator):
                     depolarize1_batch_nb(frame.frame, idle, noise.p_idle,
                                          rng.random((shots, len(idle))), pm)
 
-                # Phase 3: crosstalk (그대로 유지)
-                apply_crosstalk(frame, layout.cx_layers[li],
+                # Phase 3: crosstalk (precomputed array batch)
+                ct_q0, ct_q1 = layout.crosstalk_pair_arrays[li]
+                apply_crosstalk(frame, ct_q0, ct_q1,
+                                layout.crosstalk_leakage_qubit_arrays[li],
                                 p_crosstalk=noise.p_crosstalk,
                                 alpha=noise.crosstalk_alpha,
                                 crosstalk_leakage_rate=noise.crosstalk_leakage_rate,
@@ -357,6 +359,14 @@ class _SurfaceCodeLayout:
             idle   = [q for q in self.all_qubits if q not in active]
             self.idle_per_layer.append(np.array(idle, dtype=np.int32))
             self.active_per_layer.append(np.array(sorted(active), dtype=np.int32))
+
+        # sub-layer별 crosstalk pair 배열 + leakage 큐빗 배열 (한 번만 계산)
+        self.crosstalk_pair_arrays = []           # list of (q0_arr, q1_arr)
+        self.crosstalk_leakage_qubit_arrays = []  # list of qubit_arr
+        for layer in self.cx_layers:
+            q0, q1, leak_q = build_crosstalk_arrays(layer)
+            self.crosstalk_pair_arrays.append((q0, q1))
+            self.crosstalk_leakage_qubit_arrays.append(leak_q)
 
     def compute_final_detectors(self, data_meas: np.ndarray,
                                  last_ancilla_meas: np.ndarray) -> np.ndarray:

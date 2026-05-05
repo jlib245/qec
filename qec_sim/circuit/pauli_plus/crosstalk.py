@@ -18,7 +18,9 @@ Nature 614 Supplementary, Section XIV.A.4:
 """
 
 import numpy as np
+import numba
 from .frame import PauliFrame, PAULI_MUL, I, X, Y, Z, L2
+from .leakage import _apply_heating_nb
 
 # ---------------------------------------------------------------------------
 # ZZ-dominant 2-qubit Pauli 분포
@@ -58,13 +60,12 @@ _weights_arr /= _weights_arr.sum()
 _CUMWEIGHTS = np.cumsum(_weights_arr)
 
 # ---------------------------------------------------------------------------
-# 동시 실행 CZ 쌍 식별
+# 동시 실행 CZ 쌍 식별 (layout 초기화 시 사용)
 # ---------------------------------------------------------------------------
 
 def get_simultaneous_pairs(cx_layer: list[tuple[int, int]]) -> list[tuple[int, int, int, int]]:
     """
     하나의 CX sub-layer 내에서 인접(nearest/diagonal) CZ-CZ 쌍을 찾는다.
-
     반환: [(ctrl_a, tgt_a, ctrl_b, tgt_b), ...] — 공유 큐빗 없는 쌍만
     """
     pairs = []
@@ -73,99 +74,114 @@ def get_simultaneous_pairs(cx_layer: list[tuple[int, int]]) -> list[tuple[int, i
         for j in range(i + 1, n):
             ca, ta = cx_layer[i]
             cb, tb = cx_layer[j]
-            # 큐빗이 겹치면 skip (같은 큐빗에 두 게이트 동시 불가)
             if len({ca, ta, cb, tb}) < 4:
                 continue
             pairs.append((ca, ta, cb, tb))
     return pairs
 
 
+def build_crosstalk_arrays(cx_layer: list[tuple[int, int]]):
+    """sub-layer의 sim_pairs를 평탄화해 batch numba 함수용 배열 반환.
+
+    Returns
+    -------
+    pair_q0, pair_q1 : (n_flat,) int32 — 노이즈 적용 대상 (q0, q1) 쌍 (각 sim_pair → 2개)
+    leak_qubits     : (n_flat*2,) int32 — leakage 적용 대상 큐빗 (각 sim_pair → 4개)
+    """
+    sim_pairs = get_simultaneous_pairs(cx_layer)
+    flat_q0, flat_q1, flat_leak = [], [], []
+    for (ca, ta, cb, tb) in sim_pairs:
+        flat_q0.extend([ca, cb])
+        flat_q1.extend([ta, tb])
+        flat_leak.extend([ca, ta, cb, tb])
+    return (
+        np.array(flat_q0, dtype=np.int32),
+        np.array(flat_q1, dtype=np.int32),
+        np.array(flat_leak, dtype=np.int32),
+    )
+
+
 # ---------------------------------------------------------------------------
-# Crosstalk 채널
+# Numba batch crosstalk channel
+# ---------------------------------------------------------------------------
+
+@numba.njit(cache=True)
+def _apply_correlated_pauli2_sparse_nb(frame, q0s, q1s,
+                                        trig_i, trig_pi, pauli_idx,
+                                        pauli_pairs, pm):
+    """
+    Sparse 형식으로 trigger된 (shot, pair) 위치에만 Pauli 적용.
+    crosstalk처럼 trigger 비율이 매우 낮은 채널에 적합 — 전체 (shots, n_pairs)
+    cell 순회를 회피해 빈 cell 메모리 접근 비용 제거.
+
+    trig_i, trig_pi : (n_trig,) int — np.where(trigger_mask)로 얻은 인덱스
+    pauli_idx       : (n_trig,)   int32 — 가중치 분포에서 샘플된 _PAULIS_2Q 인덱스
+    """
+    n_trig = len(trig_i)
+    for k in range(n_trig):
+        i = trig_i[k]
+        pi = trig_pi[k]
+        q0 = q0s[pi]
+        q1 = q1s[pi]
+        idx = pauli_idx[k]
+        p0 = pauli_pairs[idx, 0]
+        p1 = pauli_pairs[idx, 1]
+        f0 = frame[i, q0]
+        f1 = frame[i, q1]
+        if f0 < 4:
+            frame[i, q0] = pm[f0, p0]
+        if f1 < 4:
+            frame[i, q1] = pm[f1, p1]
+
+
+# ---------------------------------------------------------------------------
+# 공개 API
 # ---------------------------------------------------------------------------
 
 def apply_crosstalk(
     frame: PauliFrame,
-    cx_layer: list[tuple[int, int]],
+    pair_q0: np.ndarray,
+    pair_q1: np.ndarray,
+    leak_qubits: np.ndarray,
     p_crosstalk: float,
     alpha: float = 0.25,
     crosstalk_leakage_rate: float = 0.0,
     rng: np.random.Generator | None = None,
-    sim_pairs: list | None = None,
 ):
-    """
-    하나의 CX sub-layer에 대해 동시 실행 쌍마다 crosstalk 채널 적용.
+    """한 CX sub-layer의 crosstalk 노이즈 적용.
 
-    파라미터
-    --------
-    cx_layer : 이번 sub-layer의 (ctrl, tgt) 쌍 목록
-    p_crosstalk : 쌍당 총 crosstalk 에러율 (기본값 9.5e-4, Nature 614 Table I)
-    alpha : 스케일 팩터 (1.0=원래, 0.25=Bausch 논문)
+    Parameters
+    ----------
+    frame                  : PauliFrame
+    pair_q0, pair_q1       : (n_pairs,) int32 — layout.crosstalk_pair_arrays[li]
+    leak_qubits            : (n_leak,) int32 — layout.crosstalk_leakage_qubit_arrays[li]
+    p_crosstalk            : 쌍당 총 crosstalk 에러율 (기본 9.5e-4)
+    alpha                  : 스케일 팩터 (Bausch: 0.25)
     crosstalk_leakage_rate : 한 게이트 당 crosstalk 유래 leakage 확률
-    sim_pairs : 미리 계산된 동시 실행 쌍 (None이면 매번 계산)
     """
     if rng is None:
         rng = np.random.default_rng()
 
     eff_p = p_crosstalk * alpha
-    if eff_p <= 0 and crosstalk_leakage_rate <= 0:
-        return
+    n_pairs = len(pair_q0)
 
-    if sim_pairs is None:
-        sim_pairs = get_simultaneous_pairs(cx_layer)
-    for (ca, ta, cb, tb) in sim_pairs:
-        # --- correlated Pauli 에러 (2개 게이트 큐빗에 각각 적용) ---
-        if eff_p > 0:
-            _apply_correlated_pauli2(frame, ca, ta, eff_p, rng)
-            _apply_correlated_pauli2(frame, cb, tb, eff_p, rng)
+    # --- correlated Pauli (sparse) ---
+    # crosstalk eff_p ~ 1e-4이라 trigger되는 cell 비율이 0.01% 수준.
+    # np.where로 trigger 위치만 추출해 sparse 적용.
+    if eff_p > 0 and n_pairs > 0:
+        trig_mask = rng.random((frame.n_shots, n_pairs)) < eff_p
+        trig_i, trig_pi = np.where(trig_mask)
+        n_trig = len(trig_i)
+        if n_trig > 0:
+            pauli_idx = rng.choice(len(_PAULIS_2Q), size=n_trig,
+                                   p=_weights_arr).astype(np.int32)
+            _apply_correlated_pauli2_sparse_nb(
+                frame.frame, pair_q0, pair_q1,
+                trig_i.astype(np.int64), trig_pi.astype(np.int64),
+                pauli_idx, _PAULIS_2Q_ARR, PAULI_MUL,
+            )
 
-        # --- crosstalk leakage ---
-        if crosstalk_leakage_rate > 0:
-            for q in (ca, ta, cb, tb):
-                _apply_crosstalk_leakage(frame, q, crosstalk_leakage_rate, rng)
-
-
-def _apply_correlated_pauli2(
-    frame: PauliFrame, q0: int, q1: int, p: float, rng: np.random.Generator
-):
-    """
-    ZZ-dominant 2-qubit Pauli 채널 (q0, q1 쌍에 적용).
-    leaked 큐빗은 건드리지 않음.
-    """
-    n = frame.n_shots
-    trigger = rng.random(n) < p
-
-    if not trigger.any():
-        return
-
-    # ZZ-dominant 분포에서 Pauli 선택
-    u = rng.random(trigger.sum())
-    idx = np.searchsorted(_CUMWEIGHTS, u)
-    idx = np.clip(idx, 0, len(_PAULIS_2Q) - 1)
-    p0_arr = _PAULIS_2Q_ARR[idx, 0]
-    p1_arr = _PAULIS_2Q_ARR[idx, 1]
-
-    f0 = frame.frame[trigger, q0]
-    f1 = frame.frame[trigger, q1]
-
-    # leaked 큐빗은 스킵 (mask out)
-    normal0 = f0 < 4
-    normal1 = f1 < 4
-
-    new_f0 = f0.copy()
-    new_f1 = f1.copy()
-    new_f0[normal0] = PAULI_MUL[f0[normal0], p0_arr[normal0]]
-    new_f1[normal1] = PAULI_MUL[f1[normal1], p1_arr[normal1]]
-
-    frame.frame[trigger, q0] = new_f0
-    frame.frame[trigger, q1] = new_f1
-
-
-def _apply_crosstalk_leakage(
-    frame: PauliFrame, qubit: int, p: float, rng: np.random.Generator
-):
-    """crosstalk 유래 leakage: computational subspace → L2."""
-    f = frame.frame[:, qubit]
-    normal = f < 4
-    leaks = normal & (rng.random(frame.n_shots) < p)
-    frame.frame[leaks, qubit] = L2
+    # --- crosstalk leakage (heating과 동일 메커니즘 — L2로 전이) ---
+    if crosstalk_leakage_rate > 0 and len(leak_qubits) > 0:
+        _apply_heating_nb(frame.frame, leak_qubits, crosstalk_leakage_rate,
+                          rng.random((frame.n_shots, len(leak_qubits))))
