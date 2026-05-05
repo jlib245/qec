@@ -38,12 +38,23 @@ from .crosstalk import apply_crosstalk, build_crosstalk_arrays
 class PauliPlusSimulator(BaseSimulator):
 
     def __init__(self, code_params: CodeParams, noise_params: PauliPlusNoiseParams,
-                 seed: int | None = None):
+                 seed: int | None = None,
+                 reference_circuit=None):
         self.code = code_params
         self.noise = noise_params
         self.rng = np.random.default_rng(seed)
 
-        self._layout = _SurfaceCodeLayout(code_params.distance, code_params.rounds)
+        # 참조 회로: code.name으로 등록된 빌더의 출력을 그대로 사용 (m2d_converter는
+        # noise instruction을 무시하므로 noise 0 또는 임의 noise 모두 OK).
+        if reference_circuit is None:
+            from qec_sim.config.schema import NoiseParams
+            from qec_sim.circuit.registry import build_circuit
+            zero = NoiseParams(p_gate=0.0, p_meas=0.0, p_corr=0.0)
+            reference_circuit = build_circuit(code_params.name, code_params, zero).build()
+
+        self._layout = _SurfaceCodeLayout(
+            code_params.distance, code_params.rounds, circuit=reference_circuit
+        )
         self._nd = self._layout.num_detectors
         self._no = self._layout.num_observables
 
@@ -205,20 +216,6 @@ class PauliPlusSimulator(BaseSimulator):
             if noise.data_qubit_leakage_removal_per_cycle:
                 remove_leakage(frame, layout.data_qubits, rng)
 
-        # --- detection events ---
-        # Round 1: Z-ancilla only (4 detectors, 첫 라운드는 이전 측정 없음)
-        # Round 2+: all ancilla XOR consecutive (8 detectors each)
-        # Final: data qubit 측정 기반 추가 detectors (4개)
-        det_list = []
-
-        # round 0: Z-ancilla only vs 0
-        z_idx = layout.z_ancilla_indices_in_order
-        det_list.append(ancilla_meas[0][:, z_idx])  # (shots, 4)
-
-        # rounds 1..T-1: all 8 ancilla XOR
-        for r in range(1, rounds):
-            det_list.append(ancilla_meas[r] ^ ancilla_meas[r - 1])  # (shots, 8)
-
         # --- 최종 data qubit 측정 (항상 hard — label 누출 방지) ---
         if noise.p_meas > 0:
             bitflip_batch_nb(frame.frame, layout.data_arr, noise.p_meas,
@@ -226,17 +223,14 @@ class PauliPlusSimulator(BaseSimulator):
         data_meas = measure_z_batch_nb(frame.frame, layout.data_arr,
                                        rng.random((shots, n_data)))
 
-        # 최종 round data + 마지막 ancilla 조합 detectors
-        final_dets = layout.compute_final_detectors(data_meas, ancilla_meas[-1])
-        det_list.append(final_dets)  # (shots, 4)
-
-        syndromes = np.concatenate(det_list, axis=1)  # (shots, num_detectors)
-
-        # --- logical observable: data_order에서 logical_z_indices XOR ---
-        # rotated_memory_z는 single Z observable. 다른 코드 추가 시 layout 확장 필요.
-        logical = np.zeros((shots, self._no), dtype=bool)
-        for i in layout.logical_z_data_indices:
-            logical[:, 0] ^= data_meas[:, i]
+        # --- 측정 기록을 stim 순서로 concat → m2d_converter로 detection events + observables 추출 ---
+        # Stim 측정 순서: MR_0, MR_1, ..., MR_{T-1}, M (final data).
+        # 우리 ancilla_meas[r]는 layout.ancilla_order (= 첫 MR 순서)로 기록되고,
+        # data_meas는 layout.data_order (= 최종 M 순서)로 기록되므로 그대로 concat 가능.
+        all_meas = np.concatenate([*ancilla_meas, data_meas], axis=1).astype(bool)
+        syndromes, logical = layout._m2d_converter.convert(
+            measurements=all_meas, separate_observables=True
+        )
 
         # soft_measurements: (shots, rounds, n_ancilla) float — IQ on일 때만
         if use_iq and soft_meas_rounds:
@@ -275,16 +269,20 @@ class _SurfaceCodeLayout:
     노이즈 없는 회로만 사용 — Pauli frame이 에러를 직접 추적.
     """
 
-    def __init__(self, d: int, rounds: int):
+    def __init__(self, d: int, rounds: int, *, circuit):
+        if circuit is None:
+            raise ValueError(
+                "_SurfaceCodeLayout requires a stim.Circuit (PauliPlusSimulator는 "
+                "code.name으로 등록된 빌더에서 자동 생성. 빌더가 없으면 등록 필요)."
+            )
         self.d = d
         self.rounds = rounds
-
-        circ = stim.Circuit.generated(
-            "surface_code:rotated_memory_z",
-            distance=d, rounds=rounds,
-            after_clifford_depolarization=0,
-            before_measure_flip_probability=0,
-        )
+        circ = circuit
+        self._reference_circuit = circ
+        # m2d_converter는 raw 측정 → (detection events, observables)를 Stim의 정확한
+        # detector 정의에 맞게 변환. 우리가 round 0 / round R / final 분기 logic을
+        # 직접 만들 필요 없음 — 어떤 stim 회로(memory_x, color_code 등)든 자동.
+        self._m2d_converter = circ.compile_m2d_converter()
         self.n_qubits = circ.num_qubits
         self.num_observables = circ.num_observables
         coords = circ.get_final_qubit_coordinates()
