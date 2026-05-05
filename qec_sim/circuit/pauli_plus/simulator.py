@@ -307,14 +307,8 @@ class _SurfaceCodeLayout:
         self.n_data       = len(data)
         self.n_ancilla    = len(x_anc) + len(z_anc)
 
-        # ancilla_order = Stim MR 순서 (detection event 정의와 일치해야 함)
+        # ancilla_order = Stim MR 순서 (측정 기록을 stim 순서로 concat할 때 사용)
         self.ancilla_order = self._get_mr_order(circ)
-
-        # z_ancilla_indices_in_order: ancilla_order에서 Z-ancilla의 인덱스
-        z_set = set(z_anc)
-        self.z_ancilla_indices_in_order = [
-            i for i, q in enumerate(self.ancilla_order) if q in z_set
-        ]
 
         # data_order = Stim M (최종 data 측정) 순서
         self.data_order = self._get_m_order(circ)
@@ -326,16 +320,9 @@ class _SurfaceCodeLayout:
         # CX layers: 4 sub-layers, 순서 보존
         self.cx_layers = self._get_cx_layers(circ)
 
-        # logical Z: data_order에서 observable에 포함된 인덱스
-        self.logical_z_data_indices = self._get_logical_z_indices(circ, self.data_order)
-
-        # 최종 detector 정의 (data + ancilla 조합)
-        self._final_det_defs = self._get_final_detector_defs(circ, self.data_order, self.ancilla_order)
-
-        # num_detectors: round1(4) + (rounds-1)*8 + final(4)
-        self.num_detectors = len(self.z_ancilla_indices_in_order) \
-                           + (rounds - 1) * self.n_ancilla \
-                           + len(self._final_det_defs)
+        # logical Z 정보는 m2d_converter가 자체 처리하므로 별도 추출 불필요.
+        # detector 수도 stim에서 직접.
+        self.num_detectors = circ.num_detectors
 
         # --- 배치 연산용 numpy 배열 (미리 계산) ---
         self.x_ancilla_arr    = np.array(x_anc,                dtype=np.int32)
@@ -365,22 +352,6 @@ class _SurfaceCodeLayout:
             q0, q1, leak_q = build_crosstalk_arrays(layer)
             self.crosstalk_pair_arrays.append((q0, q1))
             self.crosstalk_leakage_qubit_arrays.append(leak_q)
-
-    def compute_final_detectors(self, data_meas: np.ndarray,
-                                 last_ancilla_meas: np.ndarray) -> np.ndarray:
-        """
-        data_meas: (shots, n_data), last_ancilla_meas: (shots, n_ancilla)
-        반환: (shots, n_final_dets)
-        """
-        shots = data_meas.shape[0]
-        result = np.zeros((shots, len(self._final_det_defs)), dtype=bool)
-        for col, indices in enumerate(self._final_det_defs):
-            for src, idx in indices:
-                if src == 'data':
-                    result[:, col] ^= data_meas[:, idx]
-                else:
-                    result[:, col] ^= last_ancilla_meas[:, idx]
-        return result
 
     # ------------------------------------------------------------------ #
     # Stim 회로 파싱                                                       #
@@ -443,48 +414,3 @@ class _SurfaceCodeLayout:
                                    for i in range(0, len(targets), 2)])
         return layers
 
-    def _get_logical_z_indices(self, circ, data_order: list) -> list:
-        """OBSERVABLE_INCLUDE의 rec 오프셋 → data_order 인덱스로 변환."""
-        n_data = len(data_order)
-        indices = []
-        for inst in circ.flattened():
-            if inst.name == 'OBSERVABLE_INCLUDE':
-                for t in inst.targets_copy():
-                    # rec[-k]: data_order의 (n_data + t.value) 번째 (t.value < 0)
-                    idx = n_data + t.value  # t.value는 음수
-                    if 0 <= idx < n_data:
-                        indices.append(idx)
-        return indices
-
-    def _get_final_detector_defs(self, circ, data_order: list, ancilla_order: list) -> list:
-        """
-        최종 라운드 DETECTOR 정의를 파싱.
-        각 detector = [(src, idx), ...] 형태의 리스트.
-        src: 'data' or 'ancilla'
-        """
-        n_data    = len(data_order)
-        n_ancilla = len(ancilla_order)
-
-        # 마지막 M 명령 이후의 DETECTOR만 추출
-        insts = list(circ.flattened())
-        last_m_pos = max(i for i, inst in enumerate(insts) if inst.name == 'M')
-
-        defs = []
-        for inst in insts[last_m_pos + 1:]:
-            if inst.name != 'DETECTOR':
-                continue
-            det = []
-            for t in inst.targets_copy():
-                offset = t.value  # 음수 (rec 오프셋)
-                # M은 n_data 개, 그 이전 MR은 n_ancilla 개
-                # rec[-1] ~ rec[-n_data]: data
-                # rec[-n_data-1] ~ rec[-n_data-n_ancilla]: last ancilla
-                if offset >= -n_data:
-                    idx = n_data + offset
-                    det.append(('data', idx))
-                else:
-                    idx = n_data + n_ancilla + offset
-                    if 0 <= idx < n_ancilla:
-                        det.append(('ancilla', idx))
-            defs.append(det)
-        return defs
