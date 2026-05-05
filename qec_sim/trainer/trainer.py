@@ -24,10 +24,14 @@ class Trainer:
         total_loss = 0.0
         num_steps = 0
 
-        # train_steps가 있으면 그걸 total로, 아니면 loader 길이 (가능할 때)
-        total = self.train_steps if self.train_steps else (
-            len(self.train_loader) if hasattr(self.train_loader, '__len__') else None
-        )
+        # train_steps가 있으면 그걸 total로, 아니면 loader 길이 (IterableDataset은 len 없음).
+        if self.train_steps:
+            total = self.train_steps
+        else:
+            try:
+                total = len(self.train_loader)
+            except TypeError:
+                total = None
         pbar = tqdm(self.train_loader, total=total, desc='train', leave=False, dynamic_ncols=True)
 
         for step, (batch_dict, labels) in enumerate(pbar):
