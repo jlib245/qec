@@ -24,7 +24,7 @@ class NeuralDecoder(BaseDecoder):
         self.device = next(self.model.parameters()).device
         self.coset_lut = coset_lut
 
-    def decode_batch(self, syndromes: np.ndarray, batch_size: int = 4096,
+    def decode_batch(self, syndromes: np.ndarray, batch_size: int,
                      soft_measurements: np.ndarray = None) -> np.ndarray:
         n = len(syndromes)
         all_preds = []

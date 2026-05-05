@@ -54,7 +54,7 @@ _ZZ_WEIGHTS_RAW = {
 }
 
 _weights_arr = np.array(
-    [_ZZ_WEIGHTS_RAW.get(p, 0.05) for p in _PAULIS_2Q], dtype=float
+    [_ZZ_WEIGHTS_RAW[p] for p in _PAULIS_2Q], dtype=float
 )
 _weights_arr /= _weights_arr.sum()
 _CUMWEIGHTS = np.cumsum(_weights_arr)

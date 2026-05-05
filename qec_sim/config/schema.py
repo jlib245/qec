@@ -177,7 +177,9 @@ class ExperimentConfig:
     def get_expanded_pauli_plus_configs(self) -> List["PauliPlusNoiseParams"]:
         """simulation.pauli_plus의 list-valued 필드를 Cartesian product로 확장.
         Stim 백엔드의 get_expanded_noise_configs와 동일한 컨벤션."""
-        pp_cfg = self.simulation.get('pauli_plus', {})
+        if 'pauli_plus' not in self.simulation:
+            raise KeyError("simulation.pauli_plus 블록이 yaml에 없습니다.")
+        pp_cfg = self.simulation['pauli_plus']
         if not pp_cfg:
             raise ValueError("simulation.pauli_plus 블록이 비어있습니다.")
 
