@@ -17,6 +17,7 @@ from qec_sim.decoders._bsv_peps import (
     bsv_layout,
     build_bsv_tn,
     contract_marginal,
+    contract_marginal_bmps,
     neighbors,
 )
 
@@ -177,3 +178,44 @@ def test_contract_d5_no_crash():
     assert pL.shape == (2,)
     assert np.isfinite(pL).all()
     assert pL.sum() > 0
+
+
+# ──────────────────────────────────────────────
+# bMPS contraction with truncation (B3)
+# ──────────────────────────────────────────────
+
+@pytest.mark.parametrize("chi", [8, 16, 32])
+def test_bmps_matches_exact_d3(chi):
+    """d=3 unrotated SC의 boundary MPS bond dim 한계는 2^(2d-1) = 32. χ ≥ 8이면
+    truncation이 거의 무손실이라 exact과 충분히 가까워야 (atol 1e-8)."""
+    syn = {(0, 1): 1, (2, 3): 1}
+    tn = build_bsv_tn(d=3, p=0.07, syndrome_at_zstab=syn)
+    exact = contract_marginal(tn)
+    tn2 = build_bsv_tn(d=3, p=0.07, syndrome_at_zstab=syn)
+    bmps = contract_marginal_bmps(tn2, max_bond=chi)
+    np.testing.assert_allclose(exact / exact.sum(), bmps / bmps.sum(), atol=1e-8)
+
+
+def test_bmps_close_to_exact_d5():
+    """d=5에서 충분한 χ면 bMPS가 exact에 가까워야. 단 monotonic 비교는 안 됨
+    — quimb의 contract_compressed가 randomized path search를 쓰고 truncation도
+    strictly variational이 아니라서, χ↑에 따라 항상 diff↓ 보장 X. 절대값만 체크."""
+    rng = np.random.default_rng(2)
+    L = bsv_layout(5)
+    syn = {c: int(rng.integers(2)) for c in L.z_stabs}
+    tn = build_bsv_tn(d=5, p=0.05, syndrome_at_zstab=syn)
+    exact = contract_marginal(tn)
+    exact_norm = exact / exact.sum()
+
+    for chi in (4, 8, 16):
+        tn_b = build_bsv_tn(d=5, p=0.05, syndrome_at_zstab=syn)
+        bmps = contract_marginal_bmps(tn_b, max_bond=chi)
+        bmps_norm = bmps / bmps.sum()
+        diff = float(np.abs(exact_norm - bmps_norm).max())
+        assert diff < 1e-3, f"χ={chi}: diff {diff:.2e} too large"
+
+
+def test_bmps_invalid_chi():
+    tn = build_bsv_tn(d=3, p=0.05, syndrome_at_zstab={})
+    with pytest.raises(ValueError):
+        contract_marginal_bmps(tn, max_bond=0)

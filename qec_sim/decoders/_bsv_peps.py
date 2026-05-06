@@ -173,6 +173,29 @@ def build_bsv_tn(
 
 
 def contract_marginal(tn: qtn.TensorNetwork) -> np.ndarray:
-    """TN을 contract하고 'L' 개방 인덱스에 대한 (2,) 벡터 반환 (정규화 안 됨)."""
+    """TN을 exact contract → 'L' 인덱스 (2,) 벡터 (정규화 안 됨).
+
+    quimb의 default contraction (auto path search). 작은 d (≤5)에서만 실용적.
+    큰 d는 메모리 폭발 위험 — `contract_marginal_bmps` 사용.
+    """
     result = tn.contract(output_inds=["L"])
+    return np.asarray(result.data) if hasattr(result, 'data') else np.asarray(result)
+
+
+def contract_marginal_bmps(tn: qtn.TensorNetwork, max_bond: int) -> np.ndarray:
+    """Boundary MPS contraction with SVD truncation (bond dim ≤ max_bond).
+
+    paper Sec III A의 bMPS 방식 — TN을 column별로 흡수하면서 매 단계 MPS 형태로 압축.
+    χ = max_bond 키울수록 exact에 수렴. χ 작을수록 빠르지만 부정확.
+
+    현재 구현은 quimb의 일반 `contract_compressed` 사용 (TensorNetwork2D promote 안 함).
+    더 효율적인 구조화는 TODO.
+    """
+    if max_bond < 1:
+        raise ValueError(f"max_bond must be >= 1, got {max_bond}")
+    result = tn.contract_compressed(
+        'auto-hq',
+        max_bond=max_bond,
+        output_inds=["L"],
+    )
     return np.asarray(result.data) if hasattr(result, 'data') else np.asarray(result)
