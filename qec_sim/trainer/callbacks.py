@@ -35,9 +35,10 @@ class CSVLogger(Callback):
             writer.writerows(self.history)
 
 
-class RunLogger(Callback):
-    """stdout(print) 출력을 파일에도 기록합니다.
+class RunLogger:
+    """stdout + stderr(tqdm 포함) 모두 파일에 기록 — 터미널에 보이는 그대로.
 
+    Context manager. pipeline 진입 직후에 켜서 데이터 준비 등 모든 단계의 출력을 캡처.
     `\\r`는 현재 진행 중인 줄을 리셋하고 `\\n`는 그 줄을 commit하는 식으로
     터미널이 화면에 보여주는 결과를 그대로 파일에 반영. → IDE/cat 모두 한 줄짜리.
     """
@@ -46,16 +47,22 @@ class RunLogger(Callback):
         self.log_path = log_path
         self._file = None
         self._orig_stdout = None
+        self._orig_stderr = None
 
-    def on_train_begin(self, trainer):
+    def __enter__(self):
         os.makedirs(os.path.dirname(self.log_path) or '.', exist_ok=True)
         self._file = _ProgressAwareFile(self.log_path)
         self._orig_stdout = sys.stdout
+        self._orig_stderr = sys.stderr
         sys.stdout = _Tee(self._orig_stdout, self._file)
+        sys.stderr = _Tee(self._orig_stderr, self._file)
+        return self
 
-    def on_train_end(self, trainer):
+    def __exit__(self, exc_type, exc_val, exc_tb):
         sys.stdout = self._orig_stdout
+        sys.stderr = self._orig_stderr
         self._file.close()
+        return False
 
 
 class _Tee:

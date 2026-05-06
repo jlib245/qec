@@ -51,11 +51,12 @@ class TrainingPipeline:
 
     def run(self):
         self._setup_workspace()
-        try:
-            self._run_inner()
-        except BaseException as exc:
-            self._dump_error(exc)
-            raise
+        with RunLogger(log_path=self.workspace["run_log"]):
+            try:
+                self._run_inner()
+            except BaseException as exc:
+                self._dump_error(exc)
+                raise
 
     def _dump_error(self, exc: BaseException):
         root = self.workspace["root"]
@@ -121,7 +122,6 @@ class TrainingPipeline:
 
         callbacks = [
             ConfigSaver(src_path=self.config_path,        dst_path=self.workspace["config"]),
-            RunLogger(log_path=self.workspace["run_log"]),
             CSVLogger(log_path=self.workspace["csv_log"]),
             BestModelSaver(save_path=self.workspace["best_model"], monitor='val_loss'),
             Checkpoint(save_path=self.workspace["checkpoint"]),

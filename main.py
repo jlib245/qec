@@ -1,5 +1,10 @@
 import argparse
 import os
+from dotenv import load_dotenv
+
+# CUDA_VISIBLE_DEVICES가 torch의 CUDA 컨텍스트 생성 전에 적용되어야 함.
+load_dotenv()
+
 from qec_sim.trainer.pipeline import TrainingPipeline
 from qec_sim.trainer.eval_pipeline import EvaluationPipeline
 
