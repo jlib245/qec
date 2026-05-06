@@ -11,8 +11,9 @@ paper Eq. (6) BP rule은 메시지 표현(flat 텐서, MPS, density matrix, ...)
 """
 from __future__ import annotations
 
-from typing import List, Protocol, Tuple, runtime_checkable
+from typing import Dict, List, Protocol, Tuple, runtime_checkable
 
+import cotengra as ctg
 import numpy as np
 import quimb.tensor as qtn
 
@@ -84,6 +85,11 @@ class FlatBackend:
         if max_bond < 1:
             raise ValueError(f"max_bond must be >= 1, got {max_bond}")
         self.max_bond = max_bond
+        # (sender_block, target.bond_names) → cotengra contraction expression.
+        # 한 BP loop 동안 sender_tensors 구조와 incoming 순서가 불변이라 path 캐시 안전.
+        # block 내부 bonds는 모두 dim 2이고 d=3 k=3 등 작은 블록에선 chi truncation이
+        # 효과 없어 plain contract로 처리 (max_bond는 남겨두지만 사용 안 함).
+        self._expr_cache: Dict[Tuple, object] = {}
 
     def init_uniform(self, boundary: BoundaryGroup) -> np.ndarray:
         return np.ones(boundary.shape, dtype=np.float64)
@@ -95,16 +101,27 @@ class FlatBackend:
         target: BoundaryGroup,
         incoming: List[Tuple[BoundaryGroup, np.ndarray]],
     ) -> np.ndarray:
-        # FlatBackend는 sender_block 정보 안 씀 (TN2D 활용 안 함).
-        del sender_block
-        tensors = list(sender_tensors)
-        for g, msg in incoming:
-            tensors.append(qtn.Tensor(msg, list(g.bond_names), tags=['msg_in']))
-        sub = qtn.TensorNetwork(tensors)
-        result = sub.contract_compressed(
-            'greedy', max_bond=self.max_bond, output_inds=list(target.bond_names),
-        )
-        return np.asarray(result.data) if hasattr(result, 'data') else np.asarray(result)
+        cache_key = (sender_block, target.bond_names,
+                     tuple(g.bond_names for g, _ in incoming))
+        expr = self._expr_cache.get(cache_key)
+        if expr is None:
+            inputs = [tuple(t.inds) for t in sender_tensors]
+            shapes = [tuple(t.shape) for t in sender_tensors]
+            for g, _ in incoming:
+                inputs.append(tuple(g.bond_names))
+                shapes.append(g.shape)
+            expr = ctg.array_contract_expression(
+                inputs=inputs,
+                output=tuple(target.bond_names),
+                shapes=shapes,
+                optimize='greedy',
+            )
+            self._expr_cache[cache_key] = expr
+
+        arrays = [t.data for t in sender_tensors]
+        for _, msg in incoming:
+            arrays.append(msg)
+        return np.ascontiguousarray(expr(*arrays))
 
     def normalize(self, m: np.ndarray) -> np.ndarray:
         n = float(np.linalg.norm(m))
@@ -163,6 +180,11 @@ class MPSBackend:
         self.chi = chi
         # 블록 내부 contract 시 SVD truncation 한계 (다른 chi일 수도)
         self.max_bond_block = max_bond_block if max_bond_block is not None else max(chi, 8)
+        # _compute_outgoing_flat 의 path 캐시. 키는
+        # (sender_block, target.bond_names, sender_inds, incoming_canonical_meta).
+        # incoming MPS의 virtual bond는 canonical 이름으로 매핑 후 키에 포함.
+        # shape 변동 (chi truncation 결과) 시 새 entry — BP warmup 후엔 hit.
+        self._expr_cache: Dict[Tuple, object] = {}
 
     def _build_mps(self, arr: np.ndarray, bond_names: tuple, max_bond: int):
         """dense array → MPS with physical indices = bond_names."""
@@ -194,23 +216,72 @@ class MPSBackend:
         #   target에 logical bond 포함, 또는 sender에 L_acc 텐서.
         if target.all_spatial and not _has_l_acc(sender_tensors):
             return self._compute_outgoing_2d(sender_block, sender_tensors, target, incoming)
-        return self._compute_outgoing_flat(sender_tensors, target, incoming)
+        return self._compute_outgoing_flat(sender_block, sender_tensors, target, incoming)
+
+    @staticmethod
+    def _canonicalize_mps(msg: MPSMessage, inc_idx: int):
+        """MPS virtual bond → 캐시 키에 stable한 canonical 이름 (`_v_<inc_idx>_<pos>`).
+
+        Returns (inds_list, shape_list, array_list). msg.mps is None이면 빈 리스트들.
+        """
+        if msg.mps is None:
+            return [], [], []
+        phys_set = set(msg.bond_names)
+        tensors = list(msg.mps.tensors)
+        N = len(tensors)
+        site_inds = [t.inds for t in tensors]
+        # 인접 사이트 간 공통 ind = 그 사이의 virtual bond
+        canonical_map: Dict[str, str] = {}
+        for i in range(N - 1):
+            common = set(site_inds[i]) & set(site_inds[i + 1])
+            if len(common) != 1:
+                raise ValueError(
+                    f"MPS structure unexpected: {len(common)} common inds between sites {i}, {i+1}"
+                )
+            canonical_map[next(iter(common))] = f"_v_{inc_idx}_{i}"
+
+        new_inds = [tuple(canonical_map.get(ind, ind) for ind in inds) for inds in site_inds]
+        shapes = [tuple(t.shape) for t in tensors]
+        arrays = [np.asarray(t.data) for t in tensors]
+        return new_inds, shapes, arrays
 
     def _compute_outgoing_flat(
         self,
+        sender_block,
         sender_tensors: List[qtn.Tensor],
         target: BoundaryGroup,
         incoming: List[Tuple[BoundaryGroup, MPSMessage]],
     ) -> MPSMessage:
-        tensors = list(sender_tensors)
-        for g, msg in incoming:
-            tensors.extend(self.inject(msg, g))
-        sub = qtn.TensorNetwork(tensors)
-        result = sub.contract_compressed(
-            'greedy', max_bond=self.max_bond_block,
-            output_inds=list(target.bond_names),
+        # sender 부분 — 구조 고정
+        inputs = [tuple(t.inds) for t in sender_tensors]
+        shapes = [tuple(t.shape) for t in sender_tensors]
+        arrays = [np.asarray(t.data) for t in sender_tensors]
+        # incoming MPS — canonical 이름으로 매핑
+        inc_meta = []
+        for inc_idx, (g, msg) in enumerate(incoming):
+            c_inds, c_shapes, c_arrays = self._canonicalize_mps(msg, inc_idx)
+            inputs.extend(c_inds)
+            shapes.extend(c_shapes)
+            arrays.extend(c_arrays)
+            inc_meta.append((g.bond_names, tuple(c_inds), tuple(c_shapes)))
+
+        cache_key = (
+            sender_block, target.bond_names,
+            tuple(inputs[:len(sender_tensors)]),
+            tuple(shapes[:len(sender_tensors)]),
+            tuple(inc_meta),
         )
-        flat = np.asarray(result.data) if hasattr(result, 'data') else np.asarray(result)
+        expr = self._expr_cache.get(cache_key)
+        if expr is None:
+            expr = ctg.array_contract_expression(
+                inputs=inputs,
+                output=tuple(target.bond_names),
+                shapes=shapes,
+                optimize='greedy',
+            )
+            self._expr_cache[cache_key] = expr
+
+        flat = np.ascontiguousarray(expr(*arrays))
         mps = self._build_mps(flat, target.bond_names, max_bond=self.chi)
         return MPSMessage(mps=mps, bond_names=target.bond_names)
 
@@ -260,11 +331,12 @@ class MPSBackend:
         return MPSMessage(mps=mps, bond_names=target.bond_names)
 
     def normalize(self, m: MPSMessage) -> MPSMessage:
+        # In-place 안전: BP loop에서 normalize에 들어오는 mps는 항상 fresh
+        # (compute_outgoing/damp/init_uniform/scale 모두 새 MPS 반환).
         if m.mps is None:
             return m
-        new_mps = m.mps.copy()
-        new_mps.normalize()
-        return MPSMessage(mps=new_mps, bond_names=m.bond_names)
+        m.mps.normalize()
+        return m
 
     def damp(self, new: MPSMessage, old: MPSMessage, eta: float) -> MPSMessage:
         if new.mps is None:
