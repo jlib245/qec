@@ -38,7 +38,6 @@ class TrainingPipeline:
             "config":      os.path.join(root, "config.yaml"),
             "best_model":  os.path.join(root, "best_model.pth"),
             "checkpoint":  os.path.join(root, "checkpoint.pth"),
-            "last_model":  os.path.join(root, "last_model.pth"),
         }
 
     @staticmethod
@@ -146,6 +145,4 @@ class TrainingPipeline:
         self._phase = "train"
         trainer.fit(epochs=self.config.training.epochs)
 
-        self._phase = "save"
-        torch.save(wrapped_model.state_dict(), self.workspace["last_model"])
         print(f"\n학습 완료. 저장 위치: {self.workspace['root']}")
