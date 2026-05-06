@@ -192,6 +192,69 @@ def build_bsv_tn_for_class(
     return qtn.TensorNetwork(tensors)
 
 
+def _lacc_mps_factors(d: int, class_bit: int) -> List[qtn.Tensor]:
+    """parity_tensor(d, class_bit)를 d개 rank-3 MPS factor로 인수분해.
+
+    부호변수 a_i = ⊕_{j≤i} v_j (cumulative parity). 사이트 텐서:
+        site 0: T[v_0, a_0]        = δ(a_0 = v_0)
+        site i: T[a_{i-1}, v_i, a_i] = δ(a_i = a_{i-1} ⊕ v_i)
+        site d-1: T[a_{d-2}, v_{d-1}] = δ(a_{d-2} ⊕ v_{d-1} = class_bit)
+
+    virtual bond name: `lacc_v_{i}` (사이트 i와 i+1 사이). phys leg name: `log_{i}`.
+    Bond dim 2 throughout — 인수분해 정확 (수학적으로 동치).
+    """
+    factors: List[qtn.Tensor] = []
+    if d == 1:
+        # d=1 — 단일 사이트, parity = class_bit constraint
+        arr = np.zeros((2,))
+        arr[class_bit] = 1.0
+        factors.append(qtn.Tensor(arr, [f"log_0"], tags=['logical', 'L_acc_0']))
+        return factors
+
+    # site 0: T[v_0, a_0] = δ(a_0 = v_0) — copy
+    arr0 = np.zeros((2, 2))
+    arr0[0, 0] = 1.0
+    arr0[1, 1] = 1.0
+    factors.append(qtn.Tensor(arr0, ["log_0", "lacc_v_0"], tags=['logical', 'L_acc_0']))
+
+    # 중간 사이트 i (0 < i < d-1): T[a_{i-1}, v_i, a_i] = δ(a_i = a_{i-1} ⊕ v_i)
+    for i in range(1, d - 1):
+        arr = np.zeros((2, 2, 2))
+        for a_prev in (0, 1):
+            for v in (0, 1):
+                a_new = a_prev ^ v
+                arr[a_prev, v, a_new] = 1.0
+        factors.append(qtn.Tensor(arr, [f"lacc_v_{i-1}", f"log_{i}", f"lacc_v_{i}"],
+                                  tags=['logical', f'L_acc_{i}']))
+
+    # site d-1: T[a_{d-2}, v_{d-1}] = δ(a_{d-2} ⊕ v_{d-1} = class_bit)
+    arr_last = np.zeros((2, 2))
+    for a_prev in (0, 1):
+        for v in (0, 1):
+            if (a_prev ^ v) == class_bit:
+                arr_last[a_prev, v] = 1.0
+    factors.append(qtn.Tensor(arr_last, [f"lacc_v_{d-2}", f"log_{d-1}"],
+                              tags=['logical', f'L_acc_{d-1}']))
+    return factors
+
+
+def build_bsv_tn_for_class_mps_factored(
+    d: int,
+    p: float,
+    syndrome_at_zstab: Dict[Coord, int],
+    class_bit: int,
+) -> qtn.TensorNetwork:
+    """POC: L_acc를 단일 rank-d 텐서 대신 d개 MPS factor (bond dim 2) chain으로.
+
+    contract 결과는 `build_bsv_tn_for_class`와 수학적으로 동치 (bit-identical 기대).
+    """
+    if class_bit not in (0, 1):
+        raise ValueError(f"class_bit must be 0 or 1, got {class_bit}")
+    tensors, _, _ = _build_bsv_tensors(d, p, syndrome_at_zstab)
+    tensors.extend(_lacc_mps_factors(d, class_bit))
+    return qtn.TensorNetwork(tensors)
+
+
 def contract_marginal(tn: qtn.TensorNetwork) -> np.ndarray:
     """열린 'L' TN을 exact contract → (2,) 벡터 (정규화 안 됨)."""
     result = tn.contract(output_inds=["L"])
