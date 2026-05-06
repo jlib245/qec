@@ -120,31 +120,19 @@ def _copy_tensor(deg: int, p: float) -> np.ndarray:
 # TN 조립
 # ──────────────────────────────────────────────
 
-def build_bsv_tn(
+def _build_bsv_tensors(
     d: int,
     p: float,
     syndrome_at_zstab: Dict[Coord, int],
-) -> qtn.TensorNetwork:
-    """bit-flip Z-memory용 BSV TN 구성.
-
-    Args:
-        d: 코드 distance
-        p: 데이터 qubit별 X-error 확률
-        syndrome_at_zstab: {(x, y): 0/1} — Z stab 좌표 → syndrome 비트
-
-    Returns:
-        quimb TensorNetwork. 개방 인덱스 'L' 차원 2: contract → P(L | s).
-    """
+) -> Tuple[List[qtn.Tensor], BSVLayout, Dict[Coord, int]]:
+    """공통 부분 — 데이터/Z/X stab 텐서 생성. logical 텐서는 별도 함수에서 추가."""
     if not (0.0 <= p <= 1.0):
         raise ValueError(f"p must be in [0, 1], got {p}")
     layout = bsv_layout(d)
-
-    # logical_data → 인덱스 0..d-1, bottom 데이터 qubit이 'log_<i>' bond을 추가로 가짐
     log_idx_of: Dict[Coord, int] = {c: i for i, c in enumerate(layout.logical_data)}
 
     tensors: List[qtn.Tensor] = []
 
-    # 데이터 qubit: weighted COPY (bottom-row이면 logical bond 추가)
     for c in layout.data_qubits:
         nbrs = neighbors(c, layout.n)
         inds = [bond_name(c, nb) for nb in nbrs]
@@ -152,34 +140,68 @@ def build_bsv_tn(
             inds.append(f"log_{log_idx_of[c]}")
         tensors.append(qtn.Tensor(_copy_tensor(len(inds), p), inds, tags=['data', f'D_{c[0]}_{c[1]}']))
 
-    # Z stabilizer: parity tensor with syndrome
     for c in layout.z_stabs:
         nbrs = neighbors(c, layout.n)
         inds = [bond_name(c, nb) for nb in nbrs]
         s = int(syndrome_at_zstab.get(c, 0)) & 1
         tensors.append(qtn.Tensor(_parity_tensor(len(inds), s), inds, tags=['zstab', f'Z_{c[0]}_{c[1]}']))
 
-    # X stabilizer: all-1 (bit-flip엔 passive — 데이터 qubit COPY와 결합 시 무영향)
     for c in layout.x_stabs:
         nbrs = neighbors(c, layout.n)
         inds = [bond_name(c, nb) for nb in nbrs]
         tensors.append(qtn.Tensor(np.ones((2,) * len(inds)), inds, tags=['xstab', f'X_{c[0]}_{c[1]}']))
 
-    # Logical accumulator: bottom-row 데이터 qubit XOR == L
+    return tensors, layout, log_idx_of
+
+
+def build_bsv_tn(
+    d: int,
+    p: float,
+    syndrome_at_zstab: Dict[Coord, int],
+) -> qtn.TensorNetwork:
+    """열린 'L' 인덱스가 있는 BSV TN. contract → (2,) 벡터 [P(L=0|s), P(L=1|s)].
+
+    검증/exact 비교용. BlockBP에는 `build_bsv_tn_for_class` (닫힌 per-class)를 사용.
+    """
+    tensors, _, _ = _build_bsv_tensors(d, p, syndrome_at_zstab)
     log_inds = [f"log_{i}" for i in range(d)] + ["L"]
     tensors.append(qtn.Tensor(_parity_tensor(d + 1, 0), log_inds, tags=['logical', 'L_acc']))
+    return qtn.TensorNetwork(tensors)
 
+
+def build_bsv_tn_for_class(
+    d: int,
+    p: float,
+    syndrome_at_zstab: Dict[Coord, int],
+    class_bit: int,
+) -> qtn.TensorNetwork:
+    """Paper-faithful 닫힌 per-class TN. contract → scalar = π(f_s L̄_β G).
+
+    class_bit ∈ {0, 1}:
+        0 = Ī coset (logical 안 뒤집힘)
+        1 = X̄ coset (logical 뒤집힘)
+
+    L_acc 텐서가 bottom-row 데이터 qubit의 XOR을 class_bit과 비교하는 parity 제약 —
+    개방 인덱스 없음. BlockBP의 표준 형식 (닫힌 TN의 scalar contraction).
+    """
+    if class_bit not in (0, 1):
+        raise ValueError(f"class_bit must be 0 or 1, got {class_bit}")
+    tensors, _, _ = _build_bsv_tensors(d, p, syndrome_at_zstab)
+    log_inds = [f"log_{i}" for i in range(d)]
+    tensors.append(qtn.Tensor(_parity_tensor(d, class_bit), log_inds, tags=['logical', 'L_acc']))
     return qtn.TensorNetwork(tensors)
 
 
 def contract_marginal(tn: qtn.TensorNetwork) -> np.ndarray:
-    """TN을 exact contract → 'L' 인덱스 (2,) 벡터 (정규화 안 됨).
-
-    quimb의 default contraction (auto path search). 작은 d (≤5)에서만 실용적.
-    큰 d는 메모리 폭발 위험 — `contract_marginal_bmps` 사용.
-    """
+    """열린 'L' TN을 exact contract → (2,) 벡터 (정규화 안 됨)."""
     result = tn.contract(output_inds=["L"])
     return np.asarray(result.data) if hasattr(result, 'data') else np.asarray(result)
+
+
+def contract_scalar(tn: qtn.TensorNetwork) -> float:
+    """닫힌 per-class TN을 exact contract → scalar (정규화 안 됨)."""
+    result = tn.contract()
+    return float(result)
 
 
 def contract_marginal_bmps(tn: qtn.TensorNetwork, max_bond: int) -> np.ndarray:

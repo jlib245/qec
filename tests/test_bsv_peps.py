@@ -16,8 +16,10 @@ from qec_sim.decoders._bsv_peps import (
     bond_name,
     bsv_layout,
     build_bsv_tn,
+    build_bsv_tn_for_class,
     contract_marginal,
     contract_marginal_bmps,
+    contract_scalar,
     neighbors,
 )
 
@@ -219,3 +221,30 @@ def test_bmps_invalid_chi():
     tn = build_bsv_tn(d=3, p=0.05, syndrome_at_zstab={})
     with pytest.raises(ValueError):
         contract_marginal_bmps(tn, max_bond=0)
+
+
+# ──────────────────────────────────────────────
+# 닫힌 per-class TN (paper-faithful)
+# ──────────────────────────────────────────────
+
+@pytest.mark.parametrize("p,syndrome_dict", [
+    (0.05, {}),
+    (0.07, {(0, 1): 1, (2, 3): 1}),
+    (0.1, {(0, 1): 1, (4, 3): 1}),
+])
+def test_per_class_matches_open_L_marginal(p, syndrome_dict):
+    """열린 'L' TN의 (2,) 결과 == 닫힌 per-class TN scalar 둘. 같은 정보, 다른 패키징."""
+    tn_open = build_bsv_tn(d=3, p=p, syndrome_at_zstab=syndrome_dict)
+    open_marg = contract_marginal(tn_open)
+
+    tn_0 = build_bsv_tn_for_class(d=3, p=p, syndrome_at_zstab=syndrome_dict, class_bit=0)
+    tn_1 = build_bsv_tn_for_class(d=3, p=p, syndrome_at_zstab=syndrome_dict, class_bit=1)
+    s0 = contract_scalar(tn_0)
+    s1 = contract_scalar(tn_1)
+
+    np.testing.assert_allclose(open_marg, [s0, s1], atol=1e-12)
+
+
+def test_per_class_invalid_class_bit():
+    with pytest.raises(ValueError):
+        build_bsv_tn_for_class(d=3, p=0.05, syndrome_at_zstab={}, class_bit=2)
