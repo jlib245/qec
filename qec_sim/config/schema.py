@@ -109,6 +109,7 @@ class TrainingConfig:
     # offline 전용
     train_path: Optional[str] = None
     val_path: Optional[str] = None
+    epoch_fraction: Optional[float] = None  # epoch당 데이터셋의 몇 분의 1을 볼지 (0~1]
     # online 전용 (epoch당 생성할 샘플 수)
     train_steps: Optional[int] = None
     val_steps: Optional[int] = None
@@ -119,6 +120,39 @@ class TrainingConfig:
     pin_memory: bool = True
     scheduler: Optional[Dict[str, Any]] = None
     seed: Optional[int] = None
+
+    def __post_init__(self):
+        if self.data_mode == "offline":
+            if self.epoch_fraction is None:
+                raise ValueError(
+                    "offline 모드는 training.epoch_fraction 명시 필수 "
+                    "(예: 0.2 = 데이터셋의 1/5을 한 epoch로 본다, 1.0 = 전체)."
+                )
+            if not (0.0 < self.epoch_fraction <= 1.0):
+                raise ValueError(
+                    f"training.epoch_fraction은 (0, 1] 범위여야 합니다. 받은 값: {self.epoch_fraction}"
+                )
+            if self.train_steps is not None:
+                raise ValueError(
+                    "training.train_steps는 online 전용입니다. offline에선 epoch_fraction을 쓰세요."
+                )
+            if self.val_steps is not None:
+                raise ValueError(
+                    "training.val_steps는 online 전용입니다."
+                )
+        elif self.data_mode == "online":
+            if self.train_steps is None or self.train_steps <= 0:
+                raise ValueError(
+                    f"online 모드는 training.train_steps 양의 정수 필수. 받은 값: {self.train_steps}"
+                )
+            if self.val_steps is None or self.val_steps <= 0:
+                raise ValueError(
+                    f"online 모드는 training.val_steps 양의 정수 필수. 받은 값: {self.val_steps}"
+                )
+            if self.epoch_fraction is not None:
+                raise ValueError(
+                    "training.epoch_fraction은 offline 전용입니다."
+                )
 
 
 @dataclass

@@ -1,8 +1,42 @@
 # qec_sim/data/datamodule.py
 import torch
 import numpy as np
-from torch.utils.data import Dataset, DataLoader, IterableDataset
+from torch.utils.data import Dataset, DataLoader, IterableDataset, Sampler
 from typing import Callable, Optional, List, Tuple, Union
+
+
+class CursorShuffleSampler(Sampler[int]):
+    """전체 인덱스를 한 번 셔플한 뒤 epoch 경계와 무관하게 cursor가 이어진다.
+
+    매 epoch당 `samples_per_epoch`개 인덱스를 yield하고, cursor가 끝에 도달하면
+    새로 셔플한 다음 처음부터 다시 yield. dataset_size = N, samples_per_epoch = M
+    이면 ⌈N/M⌉ epoch이 한 "전체 순회 사이클" — 그 동안은 같은 샘플이 두 번 안 나옴.
+    """
+
+    def __init__(self, dataset_size: int, samples_per_epoch: int, seed: Optional[int] = None):
+        self.N = dataset_size
+        self.M = samples_per_epoch
+        self.gen = torch.Generator()
+        if seed is not None:
+            self.gen.manual_seed(seed)
+        self.perm = torch.randperm(self.N, generator=self.gen)
+        self.cursor = 0
+
+    def __iter__(self):
+        end = self.cursor + self.M
+        if end <= self.N:
+            indices = self.perm[self.cursor:end]
+            self.cursor = end
+        else:
+            tail = self.perm[self.cursor:]
+            self.perm = torch.randperm(self.N, generator=self.gen)
+            need = self.M - len(tail)
+            indices = torch.cat([tail, self.perm[:need]])
+            self.cursor = need
+        yield from indices.tolist()
+
+    def __len__(self):
+        return self.M
 
 
 def _worker_init_fn(worker_id: int):
@@ -80,10 +114,18 @@ class OfflineDataStrategy:
         # num_workers=0 이면 prefetch_factor 사용 불가
         pf = tc.prefetch_factor if tc.num_workers > 0 else None
 
+        # epoch_fraction 유효성은 TrainingConfig.__post_init__에서 이미 검증됨.
+        N = len(self._train_dataset)
+        samples_per_epoch = int(N * tc.epoch_fraction)
+        train_sampler = CursorShuffleSampler(
+            dataset_size=N,
+            samples_per_epoch=samples_per_epoch,
+            seed=tc.seed,
+        )
         train_loader = DataLoader(
             self._train_dataset,
             batch_size=tc.batch_size,
-            shuffle=True,
+            sampler=train_sampler,
             num_workers=tc.num_workers,
             pin_memory=tc.pin_memory,
             prefetch_factor=pf,
@@ -225,8 +267,9 @@ class OnlineDataStrategy:
 
     def prepare(self) -> None:
         tc = self.config.training
-        train_samples = tc.train_steps or 10000
-        val_samples = tc.val_steps or 2000
+        # train_steps/val_steps 유효성은 TrainingConfig.__post_init__에서 검증.
+        train_samples = tc.train_steps
+        val_samples = tc.val_steps
 
         # val_steps를 시뮬레이터 수의 배수로 올림 (균등 분배 보장)
         num_sims = len(self.simulator_pool.get_all_simulators())

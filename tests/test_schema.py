@@ -17,6 +17,8 @@ training:
   data_mode: "online"
   epochs: 1
   batch_size: 256
+  train_steps: 100
+  val_steps: 20
   output_dir: "./tmp"
   optimizer: {name: "Adam", kwargs: {lr: 0.001}}
   criterion: {name: "bce_with_logits", kwargs: {}}
@@ -88,6 +90,8 @@ def test_stim_backend_no_pauli_plus_required(tmp_path):
           data_mode: "online"
           epochs: 1
           batch_size: 256
+          train_steps: 100
+          val_steps: 20
           output_dir: "./tmp"
           optimizer: {name: "Adam", kwargs: {lr: 0.001}}
           criterion: {name: "bce_with_logits", kwargs: {}}
