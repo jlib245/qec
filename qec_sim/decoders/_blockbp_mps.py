@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional, Tuple
 
+import cotengra as ctg
 import numpy as np
 import quimb.tensor as qtn
 from quimb.tensor.belief_propagation.bp_common import (
@@ -102,6 +103,7 @@ class BlockBPMps(BeliefPropagationCommon):
         optimize: str = "auto-hq",
         contract_every=None,
         inplace: bool = False,
+        expr_cache: Optional[Dict[Tuple, object]] = None,
         **contract_opts,
     ):
         if max_chi is not None and max_chi < 1:
@@ -145,6 +147,13 @@ class BlockBPMps(BeliefPropagationCommon):
 
         self.touched: oset = oset()
 
+        # cotengra contraction expression cache for _compute_outgoing.
+        # 키: (i, j, bix, sender_inds, sender_shapes, incoming_meta).
+        # 키가 syndrome 데이터와 무관 (구조만 의존)이라 cross-shot 공유 가능.
+        # `expr_cache=None`이면 인스턴스 전용 (cross-iteration만 reuse), dict 주면 caller가
+        # 여러 BlockBPMps 인스턴스 사이 공유 가능 (cross-shot reuse).
+        self._expr_cache: Dict[Tuple, object] = expr_cache if expr_cache is not None else {}
+
         # 초기 메시지: local_tn[i] dense contract → bix 위 텐서, 그 다음 mode별 변환
         self.messages: Dict[Tuple[str, str], object] = {}
         for pair, bix in self.edges.items():
@@ -180,7 +189,7 @@ class BlockBPMps(BeliefPropagationCommon):
         return mps
 
     def _msg_as_tensors(self, msg, bix: Tuple[str, ...]) -> List[qtn.Tensor]:
-        """메시지를 sub-TN에 inject할 텐서 리스트로 변환.
+        """메시지를 sub-TN에 inject할 텐서 리스트로 변환 (contract() 사용).
 
         dense 모드: numpy array → 단일 qtn.Tensor (bix indexing)
         MPS 모드: 메시지의 site tensor list 그대로
@@ -190,6 +199,34 @@ class BlockBPMps(BeliefPropagationCommon):
         # MatrixProductState — site tensors 그대로 (virtual bond는 unique 이름이라 충돌 없음)
         return list(msg.tensors)
 
+    def _msg_as_canonical_inputs(self, msg, bix: Tuple[str, ...], inc_idx: int):
+        """메시지를 cotengra cache 친화적 (inputs, shapes, arrays) 튜플로.
+
+        cache 키 stable하려면 모든 인덱스 이름이 deterministic해야 함. dense는 이미
+        ok (bix), MPS는 virtual bond가 random uuid라 `_v_<inc_idx>_<pos>`로 매핑.
+        """
+        if isinstance(msg, np.ndarray):
+            return [tuple(bix)], [tuple(msg.shape)], [msg]
+        # MatrixProductState
+        site_inds_list = [t.inds for t in msg.tensors]
+        N = len(site_inds_list)
+        # 인접 사이트 공통 ind = 그 사이의 virtual bond
+        canonical: Dict[str, str] = {}
+        for s in range(N - 1):
+            common = set(site_inds_list[s]) & set(site_inds_list[s + 1])
+            if len(common) != 1:
+                raise ValueError(
+                    f"MPS structure unexpected: {len(common)} common inds between sites {s}, {s+1}"
+                )
+            canonical[next(iter(common))] = f"_v_{inc_idx}_{s}"
+        # phys leg는 이미 bix로 reindex됨 (canonical 이름)
+        new_inds = [
+            tuple(canonical.get(ind, ind) for ind in inds) for inds in site_inds_list
+        ]
+        shapes = [tuple(t.shape) for t in msg.tensors]
+        arrays = [np.asarray(t.data) for t in msg.tensors]
+        return new_inds, shapes, arrays
+
     # ─────────── 메시지 업데이트 ───────────
 
     def _compute_outgoing(self, i, j):
@@ -197,25 +234,53 @@ class BlockBPMps(BeliefPropagationCommon):
 
         반환은 mode 의존: dense면 numpy array, MPS면 MatrixProductState.
         둘 다 _normalize_fn 적용된 상태.
+
+        cotengra path 캐싱: 첫 호출에 expression 빌드, BP warmup 후 cache hit으로 path
+        재계산 제거. dense는 shape 항상 동일이라 cache key 1개. MPS는 chi truncation 결과
+        shape 변동 시 새 key — 보통 BP iteration 몇 번 후 안정화.
         """
         bix = self.edges[(i, j) if i < j else (j, i)]
         local_tn = self.local_tns[i]
 
-        msg_tensors: List[qtn.Tensor] = []
+        # sender 부분 — local_tn의 텐서들 (구조 고정, BP 내내 불변)
+        sender_inds = [tuple(t.inds) for t in local_tn.tensors]
+        sender_shapes = [tuple(t.shape) for t in local_tn.tensors]
+        inputs: List[Tuple[str, ...]] = list(sender_inds)
+        shapes: List[Tuple[int, ...]] = list(sender_shapes)
+        arrays: List[np.ndarray] = [np.asarray(t.data) for t in local_tn.tensors]
+
+        # incoming — canonical 이름으로 매핑하여 cache 친화적
+        inc_meta: List[Tuple] = []
+        inc_idx = 0
         for k in self.neighbors[i]:
             if k == j:
                 continue
             ki_bix = self.edges[(k, i) if k < i else (i, k)]
-            msg_tensors.extend(self._msg_as_tensors(self.messages[(k, i)], ki_bix))
+            c_inds, c_shapes, c_arrays = self._msg_as_canonical_inputs(
+                self.messages[(k, i)], ki_bix, inc_idx,
+            )
+            inputs.extend(c_inds)
+            shapes.extend(c_shapes)
+            arrays.extend(c_arrays)
+            inc_meta.append((tuple(ki_bix), tuple(c_inds), tuple(c_shapes)))
+            inc_idx += 1
 
-        sub = qtn.TensorNetwork((local_tn, *msg_tensors), virtual=False)
-        result = sub.contract(
-            all,
-            output_inds=bix,
-            optimize=self.optimize,
-            **self.contract_opts,
+        cache_key = (
+            i, j, tuple(bix),
+            tuple(sender_inds), tuple(sender_shapes),
+            tuple(inc_meta),
         )
-        arr = np.asarray(result.data)
+        expr = self._expr_cache.get(cache_key)
+        if expr is None:
+            expr = ctg.array_contract_expression(
+                inputs=inputs,
+                output=tuple(bix),
+                shapes=shapes,
+                optimize="greedy",
+            )
+            self._expr_cache[cache_key] = expr
+
+        arr = np.ascontiguousarray(expr(*arrays))
 
         if self.max_chi is None:
             return self._normalize_fn(arr)
@@ -342,9 +407,14 @@ def contract_blockbp_mps(
     strip_exponent: bool = False,
     info=None,
     progbar: bool = False,
+    expr_cache: Optional[Dict[Tuple, object]] = None,
     **contract_opts,
 ):
-    """BlockBPMps 만들고 run + contract 한 번에 — vanilla `contract_l1bp` 시그니처와 호환."""
+    """BlockBPMps 만들고 run + contract 한 번에 — vanilla `contract_l1bp` 시그니처와 호환.
+
+    `expr_cache`: 외부 dict 주면 cotengra path 표현 재사용 (cross-shot caching). 같은
+    (d, k, partition, max_chi)에서 syndrome만 바뀌는 시나리오에 큰 이득.
+    """
     bp = BlockBPMps(
         tn,
         site_tags=site_tags,
@@ -353,6 +423,7 @@ def contract_blockbp_mps(
         local_convergence=local_convergence,
         update=update,
         optimize=optimize,
+        expr_cache=expr_cache,
         **contract_opts,
     )
     bp.run(
