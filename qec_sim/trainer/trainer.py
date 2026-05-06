@@ -18,6 +18,8 @@ class Trainer:
         self.val_steps = val_steps
         self.stop_training = False
 
+    LOG_INTERVAL = 100  # 매 N step마다 stdout(→run.log)에 한 줄 요약 (\r in-place)
+
     def train_epoch(self):
         from tqdm.auto import tqdm
         self.model.train()
@@ -51,7 +53,18 @@ class Trainer:
             num_steps += 1
             if num_steps % 10 == 0:
                 pbar.set_postfix(loss=f"{total_loss/num_steps:.4f}")
+            if num_steps % self.LOG_INTERVAL == 0:
+                lr = self.optimizer.param_groups[0]['lr']
+                total_str = f"/{total}" if total else ""
+                # \r로 같은 줄을 덮어써 run.log/터미널 모두 한 줄짜리로 유지
+                print(
+                    f"\rstep {num_steps}{total_str} | "
+                    f"loss={total_loss/num_steps:.4f} | lr={lr:.2e}",
+                    end='', flush=True,
+                )
 
+        # 마지막 \r-라인을 종료해서 다음 print(epoch summary 등)가 새 줄에 찍히도록
+        print(flush=True)
         return total_loss / max(num_steps, 1)
 
     def fit(self, epochs: int):

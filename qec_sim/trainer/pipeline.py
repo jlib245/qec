@@ -1,6 +1,8 @@
 import os
+import json
 import random
 import datetime
+import traceback
 import numpy as np
 import torch
 
@@ -22,6 +24,7 @@ class TrainingPipeline:
         from qec_sim.core.interfaces import get_best_device
         self.device = get_best_device()
         self.workspace = {}
+        self._phase = "init"
 
     def _setup_workspace(self):
         from qec_sim.trainer.utils import timestamped_output_dir
@@ -49,7 +52,39 @@ class TrainingPipeline:
 
     def run(self):
         self._setup_workspace()
+        try:
+            self._run_inner()
+        except BaseException as exc:
+            self._dump_error(exc)
+            raise
 
+    def _dump_error(self, exc: BaseException):
+        root = self.workspace["root"]
+        tb_str = traceback.format_exc()
+        log_path = os.path.join(root, "error.log")
+        json_path = os.path.join(root, "error.json")
+
+        with open(log_path, "w") as f:
+            f.write(tb_str)
+
+        record = {
+            "timestamp":         datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
+            "config_path":       self.config_path,
+            "phase":             self._phase,
+            "exception_type":    type(exc).__name__,
+            "exception_module":  type(exc).__module__,
+            "exception_message": str(exc),
+            "device":            str(self.device),
+            "output_dir":        root,
+            "traceback":         tb_str,
+        }
+        with open(json_path, "w") as f:
+            json.dump(record, f, ensure_ascii=False, indent=2)
+
+        print(f"\n학습 실패 (phase={self._phase}). 저장: {log_path}, {json_path}")
+
+    def _run_inner(self):
+        self._phase = "setup"
         seed = self.config.training.seed
         if seed is not None:
             self._set_seed(seed)
@@ -61,10 +96,12 @@ class TrainingPipeline:
         datamodule, wrapped_model = ComponentFactory.build_system(self.config)
         wrapped_model = wrapped_model.to(self.device)
 
+        self._phase = "data_prepare"
         print("데이터를 준비합니다...")
         datamodule.strategy.prepare()
         train_loader, val_loader = datamodule.get_loaders()
 
+        self._phase = "train_setup"
         criterion = build_criterion(
             self.config.training.criterion['name'],
             **self.config.training.criterion.get('kwargs', {})
@@ -106,7 +143,9 @@ class TrainingPipeline:
             val_steps=None if is_online else self.config.training.val_steps,
         )
 
+        self._phase = "train"
         trainer.fit(epochs=self.config.training.epochs)
 
+        self._phase = "save"
         torch.save(wrapped_model.state_dict(), self.workspace["last_model"])
         print(f"\n학습 완료. 저장 위치: {self.workspace['root']}")

@@ -36,7 +36,11 @@ class CSVLogger(Callback):
 
 
 class RunLogger(Callback):
-    """터미널 출력을 파일에도 동시에 기록합니다."""
+    """stdout(print) 출력을 파일에도 기록합니다.
+
+    `\\r`는 현재 진행 중인 줄을 리셋하고 `\\n`는 그 줄을 commit하는 식으로
+    터미널이 화면에 보여주는 결과를 그대로 파일에 반영. → IDE/cat 모두 한 줄짜리.
+    """
 
     def __init__(self, log_path: str):
         self.log_path = log_path
@@ -45,7 +49,7 @@ class RunLogger(Callback):
 
     def on_train_begin(self, trainer):
         os.makedirs(os.path.dirname(self.log_path) or '.', exist_ok=True)
-        self._file = open(self.log_path, 'w', encoding='utf-8')
+        self._file = _ProgressAwareFile(self.log_path)
         self._orig_stdout = sys.stdout
         sys.stdout = _Tee(self._orig_stdout, self._file)
 
@@ -67,6 +71,43 @@ class _Tee:
     def flush(self):
         for s in self._streams:
             s.flush()
+
+
+class _ProgressAwareFile:
+    """`\\r`/`\\n`를 터미널 의미대로 처리하는 file-like wrapper.
+
+    파일 내용 = (지금까지 commit된 줄들) + (현재 진행중인 부분 줄). `\\r`가 들어오면
+    진행중 부분만 리셋하고, `\\n`가 들어오면 진행중 부분을 한 줄로 commit. 매 write마다
+    파일 전체를 truncate-rewrite하므로 한 번에 큰 사이즈로 쓰지 말 것.
+    """
+
+    def __init__(self, path: str):
+        self._path = path
+        self._committed = ""
+        self._partial = ""
+        self._fh = open(path, 'w', encoding='utf-8', buffering=1)
+
+    def write(self, data: str):
+        if not data:
+            return
+        for ch in data:
+            if ch == '\r':
+                self._partial = ""
+            elif ch == '\n':
+                self._committed += self._partial + '\n'
+                self._partial = ""
+            else:
+                self._partial += ch
+        self._fh.seek(0)
+        self._fh.truncate()
+        self._fh.write(self._committed + self._partial)
+        self._fh.flush()
+
+    def flush(self):
+        self._fh.flush()
+
+    def close(self):
+        self._fh.close()
 
 
 # ──────────────────────────────────────────────
