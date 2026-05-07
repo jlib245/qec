@@ -89,6 +89,7 @@ def decode_blockbp_mps(
     update: str = "sequential",
     optimize: str = "auto-hq",
     expr_cache: Optional[Dict] = None,
+    n_workers: Optional[int] = None,
 ) -> BlockBPMpsDecodeResult:
     """Paper Algorithm 1 (binary, bit-flip Z-memory) — BlockBPMps 기반.
 
@@ -116,7 +117,7 @@ def decode_blockbp_mps(
             tn_tagged, site_tags=site_tags,
             max_iterations=max_iter, tol=tol, damping=damping,
             max_chi=max_chi, update=update, optimize=optimize,
-            info=info, expr_cache=expr_cache,
+            info=info, expr_cache=expr_cache, n_workers=n_workers,
         )
         z_values.append(float(z))
         iterations.append(int(info.get("iterations", max_iter)))
@@ -163,12 +164,13 @@ class BlockBPMpsSession:
         damping: float = 0.3,
         update: str = "sequential",
         optimize: str = "auto-hq",
+        n_workers: Optional[int] = None,
     ) -> BlockBPMpsDecodeResult:
         return decode_blockbp_mps(
             d=d, p=p, syndrome_at_zstab=syndrome_at_zstab, k=k,
             max_chi=max_chi, max_iter=max_iter, tol=tol, damping=damping,
             update=update, optimize=optimize,
-            expr_cache=self.expr_cache,
+            expr_cache=self.expr_cache, n_workers=n_workers,
         )
 
     def cache_size(self) -> int:

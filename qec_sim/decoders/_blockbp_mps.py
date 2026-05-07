@@ -87,6 +87,9 @@ class BlockBPMps(BeliefPropagationCommon):
         normalize, distance: 보통 None (자동: MPS 모드면 MPS-aware, dense면 BPC default L2).
         local_convergence: 모든 incoming이 수렴한 노드는 update skip (BPC 패턴).
         optimize: cotengra path optimizer.
+        n_workers: `update="parallel"`일 때 sender별 `_compute_outgoing`을 동시 실행할
+            thread 수. None이면 직렬. 같은 process 안이라 expr_cache 공유 유지.
+            cotengra/numpy/BLAS이 GIL을 풀어주므로 thread도 효과적.
     """
 
     def __init__(
@@ -104,10 +107,13 @@ class BlockBPMps(BeliefPropagationCommon):
         contract_every=None,
         inplace: bool = False,
         expr_cache: Optional[Dict[Tuple, object]] = None,
+        n_workers: Optional[int] = None,
         **contract_opts,
     ):
         if max_chi is not None and max_chi < 1:
             raise ValueError(f"max_chi must be >= 1, got {max_chi}")
+        if n_workers is not None and n_workers < 1:
+            raise ValueError(f"n_workers must be >= 1, got {n_workers}")
 
         # MPS 모드면 normalize/distance/damping을 MPS-aware callable로 주입
         # (BPC default는 numpy array 가정 — MPS 객체엔 안 맞음)
@@ -132,6 +138,7 @@ class BlockBPMps(BeliefPropagationCommon):
         self.local_convergence = local_convergence
         self.optimize = optimize
         self.contract_opts = contract_opts
+        self.n_workers = n_workers
 
         if site_tags is None:
             self.site_tags = tuple(self.tn.site_tags)
@@ -317,10 +324,21 @@ class BlockBPMps(BeliefPropagationCommon):
             self.messages[key] = new_msg
 
         if self.update == "parallel":
-            new_data = {}
+            keys = []
             while self.touched:
-                key = self.touched.pop()
-                new_data[key] = self._compute_outgoing(*key)
+                keys.append(self.touched.pop())
+
+            if self.n_workers and self.n_workers > 1 and len(keys) > 1:
+                # cotengra/numpy/BLAS releases GIL → threads work for the hot path.
+                # _expr_cache 동시 쓰기는 dict ops가 GIL-atomic이라 안전. 두 워커가
+                # 같은 key를 동시에 miss하면 둘 다 빌드(낭비)하지만 결과 동일 → race-free.
+                from concurrent.futures import ThreadPoolExecutor
+                with ThreadPoolExecutor(max_workers=self.n_workers) as ex:
+                    msgs = list(ex.map(lambda k: self._compute_outgoing(*k), keys))
+                new_data = dict(zip(keys, msgs))
+            else:
+                new_data = {k: self._compute_outgoing(*k) for k in keys}
+
             for key, msg in new_data.items():
                 _update_msg(key, msg)
 
@@ -408,6 +426,7 @@ def contract_blockbp_mps(
     info=None,
     progbar: bool = False,
     expr_cache: Optional[Dict[Tuple, object]] = None,
+    n_workers: Optional[int] = None,
     **contract_opts,
 ):
     """BlockBPMps 만들고 run + contract 한 번에 — vanilla `contract_l1bp` 시그니처와 호환.
@@ -424,6 +443,7 @@ def contract_blockbp_mps(
         update=update,
         optimize=optimize,
         expr_cache=expr_cache,
+        n_workers=n_workers,
         **contract_opts,
     )
     bp.run(
