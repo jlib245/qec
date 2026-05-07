@@ -2,3 +2,4 @@
 
 from . import jung_cnn_low
 from . import baseline  # MLPDecoder
+from . import qct
