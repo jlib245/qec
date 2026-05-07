@@ -8,4 +8,5 @@ from .mwpm import MWPMDecoder
 # 나중에 새로운 디코더(예: bp.py)를 만들면 여기에 from .bp import ... 추가
 from .neural import NeuralDecoder
 from .belief_matching import BeliefMatchingDecoder
+from .belief_matching_fast import BeliefMatchingFastDecoder
 from .bp_osd import BpOsdDecoder
