@@ -12,6 +12,7 @@ from qec_sim.circuit.simulator import CircuitNoiseSimulator
 from qec_sim.decoders.mwpm import MWPMDecoder
 from qec_sim.decoders.neural import NeuralDecoder
 from qec_sim.decoders.belief_matching import BeliefMatchingDecoder
+from qec_sim.decoders.bp_osd import BpOsdDecoder
 
 
 class EvaluationPipeline:
@@ -105,7 +106,8 @@ class EvaluationPipeline:
                 # MWPM의 DEM 또는 coset LUT 생성에 stim 회로가 필요.
                 # leakage/crosstalk은 DEM에 표현 불가 — Pauli만 본다.
                 needs_circuit = (
-                    decoder_name in ("mwpm", "belief_matching") or self.config.model.coset_mode
+                    decoder_name in ("mwpm", "belief_matching", "bp_osd")
+                    or self.config.model.coset_mode
                 )
                 proxy_circuit = None
                 if needs_circuit:
@@ -147,6 +149,12 @@ class EvaluationPipeline:
                 dem = circuit.detector_error_model(decompose_errors=True)
                 bm = BeliefMatchingDecoder(error_model=dem)
                 preds = bm.decode_batch(syndromes)
+            elif decoder_name == "bp_osd":
+                if circuit is None:
+                    raise ValueError("bp_osd decoder는 stim backend에서만 지원됩니다.")
+                dem = circuit.detector_error_model(decompose_errors=False)
+                bp_osd = BpOsdDecoder(error_model=dem)
+                preds = bp_osd.decode_batch(syndromes)
             else:
                 raise ValueError(f"지원하지 않는 decoder: {decoder_name}")
 
