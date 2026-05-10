@@ -16,6 +16,7 @@ This file is derived from honeycomb_threshold/src/noise.py.
 
 Apache-2.0 LICENSE text:
   https://www.apache.org/licenses/LICENSE-2.0
+  A verbatim copy is reproduced at LICENSES/Apache-2.0.txt
 
 Modifications from the upstream file:
   - Added "CX" and "MR"/"MRX"/"MRY" entries to NoiseModel.SI1000().noisy_gates
