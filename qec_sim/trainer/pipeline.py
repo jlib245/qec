@@ -96,6 +96,21 @@ class TrainingPipeline:
         datamodule, wrapped_model = ComponentFactory.build_system(self.config)
         wrapped_model = wrapped_model.to(self.device)
 
+        # Optional: load pretrained weights for fine-tuning.
+        pretrained = self.config.model.pretrained
+        if pretrained:
+            state = torch.load(pretrained, map_location=self.device)
+            if isinstance(state, dict) and "core_model" in state:
+                state = state["core_model"]
+            if isinstance(state, dict) and "model_state" in state:
+                state = state["model_state"]
+            # Try loading on wrapped_model first; fall back to core model.
+            try:
+                wrapped_model.load_state_dict(state, strict=False)
+            except Exception:
+                wrapped_model.core_model.load_state_dict(state, strict=False)
+            print(f"  [Pretrained] 가중치 로드: {pretrained}")
+
         self._phase = "data_prepare"
         print("데이터를 준비합니다...")
         datamodule.strategy.prepare()

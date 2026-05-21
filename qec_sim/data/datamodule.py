@@ -194,9 +194,18 @@ class OnlineQECDataset(IterableDataset):
         for start in range(0, n, bs):
             end = min(start + bs, n)
             batch = {k: t[start:end] for k, t in tensors.items()}
+            labels = label_arr[start:end]
             if self.cpu_transform:
                 batch = self.cpu_transform(batch)
-            yield batch, label_arr[start:end]
+            # Optional filter: preprocessor injects `_keep_mask` (e.g. gap-routed
+            # fine-tuning keeps only gap < threshold). Apply to batch + labels.
+            if "_keep_mask" in batch:
+                mask = batch.pop("_keep_mask")
+                if mask.sum() == 0:
+                    continue
+                batch = {k: v[mask] for k, v in batch.items()}
+                labels = labels[mask]
+            yield batch, labels
 
     def __iter__(self):
         worker_info = torch.utils.data.get_worker_info()

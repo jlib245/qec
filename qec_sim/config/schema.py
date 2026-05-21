@@ -161,6 +161,7 @@ class ModelConfig:
     coset_mode: bool = False
     kwargs: Dict[str, Any] = field(default_factory=dict)
     preprocessor: Dict[str, Any] = field(default_factory=dict)
+    pretrained: Optional[str] = None  # path to .pth for fine-tuning
 
 
 @dataclass
