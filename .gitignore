@@ -8,6 +8,12 @@
 ### Run logs ###
 nohup*.out
 
+### MLflow ###
+mlruns.db
+mlruns.db-journal
+mlruns/
+mlartifacts/
+
 ### Linux ###
 *~
 

@@ -13,7 +13,7 @@ from qec_sim.metrics.evaluator import Evaluator
 from qec_sim.metrics.registry import build_criterion
 from qec_sim.trainer.callbacks import (
     CSVLogger, RunLogger, ConfigSaver,
-    BestModelSaver, Checkpoint, EarlyStopping,
+    BestModelSaver, Checkpoint, EarlyStopping, MLflowCallback,
 )
 
 
@@ -142,6 +142,13 @@ class TrainingPipeline:
             Checkpoint(save_path=self.workspace["checkpoint"]),
             EarlyStopping(patience=self.config.training.early_stopping['patience'], monitor='val_loss'),
         ]
+        if self.config.mlflow.enable:
+            callbacks.append(MLflowCallback(
+                mlflow_cfg=self.config.mlflow,
+                experiment_cfg=self.config,
+                config_src_path=self.config_path,
+                workspace=self.workspace,
+            ))
 
         # online 모드: dataset이 epoch 크기를 직접 제어 → Trainer steps 제한 불필요
         is_online = self.config.training.data_mode == "online"

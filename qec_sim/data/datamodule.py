@@ -49,9 +49,15 @@ def _worker_init_fn(worker_id: int):
 
 
 class QECRawDataset(Dataset):
-    """전처리기가 명시한 데이터만 하드디스크에서 꺼내어 cpu_transform을 거쳐 반환합니다."""
+    """전처리기가 명시한 데이터만 하드디스크에서 꺼내어 cpu_transform을 거쳐 반환합니다.
 
-    def __init__(self, npz_path: str, required_keys: List[str], cpu_transform: Optional[Callable] = None):
+    coset_lut 가 주어지면 observables → coset label (class index) 로 변환.
+    online path 의 OnlineQECDataset._yield_chunk_batches 와 대칭이라 동일 .npz 가
+    coset / non-coset 양쪽에서 그대로 재사용 가능.
+    """
+
+    def __init__(self, npz_path: str, required_keys: List[str],
+                 cpu_transform: Optional[Callable] = None, coset_lut=None):
         data = np.load(npz_path)
 
         self.data_dict = {}
@@ -65,11 +71,21 @@ class QECRawDataset(Dataset):
 
         # 'observables' 또는 'logical_outcomes' 키 모두 지원
         if 'observables' in data:
-            self.labels = torch.tensor(data['observables'])
+            obs = data['observables']
         elif 'logical_outcomes' in data:
-            self.labels = torch.tensor(data['logical_outcomes'])
+            obs = data['logical_outcomes']
         else:
             raise ValueError(f"라벨 키('observables' 또는 'logical_outcomes')가 데이터셋에 없습니다. 파일 내 키: {list(data.keys())}")
+
+        if coset_lut is not None:
+            if 'syndromes' not in data:
+                raise ValueError(
+                    "coset_mode 사용 시 .npz 에 'syndromes' 키 필수 (coset label 계산용)."
+                )
+            from qec_sim.decoders.lut import compute_coset_labels
+            self.labels = torch.from_numpy(compute_coset_labels(data['syndromes'], obs, coset_lut))
+        else:
+            self.labels = torch.tensor(obs)
 
         self.cpu_transform = cpu_transform
 
@@ -86,10 +102,12 @@ class QECRawDataset(Dataset):
 class OfflineDataStrategy:
     """오프라인 .npz 파일에서 데이터를 로드하는 전략."""
 
-    def __init__(self, config, required_keys: List[str], cpu_transform: Optional[Callable] = None):
+    def __init__(self, config, required_keys: List[str],
+                 cpu_transform: Optional[Callable] = None, coset_lut=None):
         self.config = config
         self.required_keys = required_keys
         self.cpu_transform = cpu_transform
+        self.coset_lut = coset_lut
         self._train_dataset: Optional[QECRawDataset] = None
         self._val_dataset: Optional[QECRawDataset] = None
 
@@ -99,11 +117,13 @@ class OfflineDataStrategy:
             npz_path=tc.train_path,
             required_keys=self.required_keys,
             cpu_transform=self.cpu_transform,
+            coset_lut=self.coset_lut,
         )
         self._val_dataset = QECRawDataset(
             npz_path=tc.val_path,
             required_keys=self.required_keys,
             cpu_transform=self.cpu_transform,
+            coset_lut=self.coset_lut,
         )
 
     def get_loaders(self) -> Tuple[DataLoader, DataLoader]:

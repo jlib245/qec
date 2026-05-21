@@ -187,6 +187,25 @@ class SimulationConfig:
 
 
 @dataclass
+class MLflowConfig:
+    """`mlflow:` yaml 블록. 블록이 없거나 enable=False 면 mlflow 로깅은 비활성.
+
+    enable=True 일 때만 학습 중 mlflow run 이 열린다. 모든 필드는 schema 에
+    노출 — 사용 지점에서 getattr 기본값 같은 silent fallback 을 두지 말 것.
+    """
+    enable: bool = False
+    experiment_name: Optional[str] = None  # None → f"{code.name}_d{code.distance}" 자동 (per-code 컨벤션)
+    run_name: Optional[str] = None  # None → mlflow auto-generate
+    tags: Dict[str, str] = field(default_factory=dict)
+    tracking_uri: str = "sqlite:///mlruns.db"
+    artifact_location: Optional[str] = None  # None → ./mlartifacts/<exp_id>
+    # Model Registry (opt-in). 활성화 시 학습 종료 후 best model 을 registry 에 등록.
+    register_model: bool = False
+    registered_model_name: Optional[str] = None  # None → f"{model.name}_d{code.distance}"
+    register_alias: Optional[str] = None  # 새 version 에 박을 alias (예: "candidate")
+
+
+@dataclass
 class ExperimentConfig:
     code: CodeParams
     noise: NoiseParams
@@ -194,6 +213,7 @@ class ExperimentConfig:
     model: ModelConfig
     decoder: DecoderConfig
     simulation: SimulationConfig
+    mlflow: MLflowConfig = field(default_factory=MLflowConfig)
 
     @classmethod
     def from_yaml(cls, path: str):
@@ -220,6 +240,19 @@ class ExperimentConfig:
                     f"PauliPlusNoiseParams 필드: {sorted(valid)}"
                 )
 
+        mlflow_raw = data.get('mlflow')
+        if mlflow_raw is None:
+            mlflow_cfg = MLflowConfig()
+        else:
+            valid = {f.name for f in dc.fields(MLflowConfig)}
+            unknown = set(mlflow_raw) - valid
+            if unknown:
+                raise KeyError(
+                    f"mlflow 블록에 알 수 없는 키: {unknown}. "
+                    f"MLflowConfig 필드: {sorted(valid)}"
+                )
+            mlflow_cfg = MLflowConfig(**mlflow_raw)
+
         return cls(
             code=CodeParams(**filter_fields(CodeParams, data['code'])),
             noise=NoiseParams(**filter_fields(NoiseParams, data['noise'])),
@@ -227,6 +260,7 @@ class ExperimentConfig:
             model=ModelConfig(**filter_fields(ModelConfig, data['model'])),
             decoder=DecoderConfig(**filter_fields(DecoderConfig, data['decoder'])),
             simulation=sim,
+            mlflow=mlflow_cfg,
         )
 
     def get_expanded_noise_configs(self) -> List[NoiseParams]:

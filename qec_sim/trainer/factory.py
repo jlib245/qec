@@ -58,6 +58,7 @@ class ComponentFactory:
                 config=config,
                 required_keys=preprocessor.required_data_keys,
                 cpu_transform=preprocessor.cpu_transform,
+                coset_lut=coset_lut,
             )
         else:
             raise ValueError(f"알 수 없는 data_mode: '{data_mode}'. 'online' 또는 'offline'을 사용하세요.")

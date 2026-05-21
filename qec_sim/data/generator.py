@@ -44,7 +44,9 @@ class DatasetGenerator:
     # ------------------------------------------------------------------ #
 
     def generate_and_save(self, shots: int, save_dir: str, filename: str,
-                          batch_size: int, compress: bool = True):
+                          batch_size: int, compress: bool = True, seed: int | None = None):
+        """seed 가 주어지면 .npz 에 `_meta_seed` 키로 함께 저장 (재현성 추적용).
+        실제 np.random/random seeding 은 caller (main.py gen 분기) 가 수행."""
         from tqdm.auto import tqdm
         Path(save_dir).mkdir(parents=True, exist_ok=True)
         filepath = Path(save_dir) / f"{filename}.npz"
@@ -91,6 +93,8 @@ class DatasetGenerator:
         print("  -> 셔플 + 저장 중...", flush=True)
         indices = np.random.permutation(shots)
         shuffled = {k: v[indices] for k, v in buffers.items()}
+        if seed is not None:
+            shuffled['_meta_seed'] = np.array(int(seed))
 
         save_fn = np.savez_compressed if compress else np.savez
         save_fn(filepath, **shuffled)
