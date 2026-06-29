@@ -28,27 +28,35 @@ from .frame import PauliFrame, _CX_C, _CX_T, apply_h_batch_nb, apply_cx_layer_nb
 from .channels import (depolarize1, depolarize2, bitflip,
                        depolarize1_batch_nb, depolarize2_layer_nb, bitflip_batch_nb,
                        PAULI_MUL, _PAULI_PAIRS)
-from .leakage import (apply_cz_leakage, apply_heating,
-                      remove_leakage, apply_passive_decay,
+from .leakage import (remove_leakage, apply_passive_decay,
                       _apply_cz_leakage_layer_nb, _apply_heating_nb)
-from .iq_noise import (get_true_z_state, sample_iq, compute_posterior,
-                       soft_xor_consecutive, threshold,
-                       _get_true_z_state_batch_nb, _sample_iq_batch_nb,
+from .iq_noise import (_get_true_z_state_batch_nb, _sample_iq_batch_nb,
                        _compute_posterior_batch_nb)
-from .crosstalk import apply_crosstalk
+from .crosstalk import apply_crosstalk, build_crosstalk_arrays
 
 
 class PauliPlusSimulator(BaseSimulator):
 
     def __init__(self, code_params: CodeParams, noise_params: PauliPlusNoiseParams,
-                 seed: int | None = None):
+                 seed: int | None = None,
+                 reference_circuit=None):
         self.code = code_params
         self.noise = noise_params
         self.rng = np.random.default_rng(seed)
 
-        self._layout = _SurfaceCodeLayout(code_params.distance, code_params.rounds)
+        # 참조 회로: code.name으로 등록된 빌더의 출력을 그대로 사용 (m2d_converter는
+        # noise instruction을 무시하므로 noise 0 또는 임의 noise 모두 OK).
+        if reference_circuit is None:
+            from qec_sim.config.schema import NoiseParams
+            from qec_sim.circuit.registry import build_circuit
+            zero = NoiseParams(p_gate=0.0, p_meas=0.0, p_corr=0.0)
+            reference_circuit = build_circuit(code_params.name, code_params, zero).build()
+
+        self._layout = _SurfaceCodeLayout(
+            code_params.distance, code_params.rounds, circuit=reference_circuit
+        )
         self._nd = self._layout.num_detectors
-        self._no = 1  # Z-memory: single logical observable
+        self._no = self._layout.num_observables
 
     # ------------------------------------------------------------------ #
     # BaseSimulator interface                                              #
@@ -64,6 +72,10 @@ class PauliPlusSimulator(BaseSimulator):
 
     def generate_data(self, shots: int) -> dict:
         return self._run(shots)
+
+    def reseed(self, seed) -> None:
+        """np.random.SeedSequence | int | None → 자체 rng 재생성."""
+        self.rng = np.random.default_rng(seed)
 
     def get_ancilla_coordinates(self) -> dict:
         """ancilla_order 기준 인덱스 → (x, y) 좌표 반환. SoftGridPreprocessor 초기화에 사용."""
@@ -84,7 +96,7 @@ class PauliPlusSimulator(BaseSimulator):
         frame = PauliFrame(shots, layout.n_qubits)
 
         # --- 초기화: 모든 큐빗 리셋 + 리셋 노이즈 ---
-        _reset(frame, layout.all_qubits, noise.p_reset, rng)
+        _reset(frame, layout.all_qubits_arr, noise.p_reset, rng)
 
         # 측정 기록
         ancilla_meas     = []                    # hard: (shots, n_ancilla) bool
@@ -104,7 +116,7 @@ class PauliPlusSimulator(BaseSimulator):
         n_anc     = layout.n_ancilla
         n_data    = layout.n_data
         p_decay   = 1.0 - np.exp(-noise.t_meas_over_T1) if noise.t_meas_over_T1 > 0 else 0.0
-        p_heat    = noise.heating_rate_per_us * 0.05
+        p_heat    = noise.heating_rate_per_us * noise.t_cx_us
 
         for r in range(rounds):
             # 1. H on X-ancilla (배치) + 1q gate noise (배치)
@@ -150,8 +162,10 @@ class PauliPlusSimulator(BaseSimulator):
                     depolarize1_batch_nb(frame.frame, idle, noise.p_idle,
                                          rng.random((shots, len(idle))), pm)
 
-                # Phase 3: crosstalk (그대로 유지)
-                apply_crosstalk(frame, layout.cx_layers[li],
+                # Phase 3: crosstalk (precomputed array batch)
+                ct_q0, ct_q1 = layout.crosstalk_pair_arrays[li]
+                apply_crosstalk(frame, ct_q0, ct_q1,
+                                layout.crosstalk_leakage_qubit_arrays[li],
                                 p_crosstalk=noise.p_crosstalk,
                                 alpha=noise.crosstalk_alpha,
                                 crosstalk_leakage_rate=noise.crosstalk_leakage_rate,
@@ -167,11 +181,11 @@ class PauliPlusSimulator(BaseSimulator):
             if noise.p_resonator_idle > 0:
                 depolarize1_batch_nb(frame.frame, data_arr, noise.p_resonator_idle,
                                      rng.random((shots, n_data)), pm)
-            # Phase 2: passive T1 decay (per qubit — 그대로 유지)
+            # Phase 2: passive T1 decay (data qubits 일괄 처리, 측정 중 시간)
             if noise.passive_decay_T1_us > 0:
-                for q in layout.data_qubits:
-                    apply_passive_decay(frame, [q], noise.passive_decay_T1_us,
-                                        t_us=0.5, rng=rng)
+                apply_passive_decay(frame, layout.data_arr,
+                                    noise.passive_decay_T1_us,
+                                    t_us=noise.t_meas_us, rng=rng)
 
             # 5. Measure ancilla in Z + IQ noise
             if use_iq:
@@ -194,27 +208,13 @@ class PauliPlusSimulator(BaseSimulator):
                 soft_meas_rounds.append(post1_meas)
 
             # 6. 리셋 ancilla + leakage removal
-            _reset(frame, layout.ancilla_order, noise.p_reset, rng)
+            _reset(frame, anc_order, noise.p_reset, rng)
             if noise.leakage_removal_after_reset:
                 remove_leakage(frame, layout.ancilla_order, rng)
 
             # Phase 2: data qubit leakage removal per cycle
             if noise.data_qubit_leakage_removal_per_cycle:
                 remove_leakage(frame, layout.data_qubits, rng)
-
-        # --- detection events ---
-        # Round 1: Z-ancilla only (4 detectors, 첫 라운드는 이전 측정 없음)
-        # Round 2+: all ancilla XOR consecutive (8 detectors each)
-        # Final: data qubit 측정 기반 추가 detectors (4개)
-        det_list = []
-
-        # round 0: Z-ancilla only vs 0
-        z_idx = layout.z_ancilla_indices_in_order
-        det_list.append(ancilla_meas[0][:, z_idx])  # (shots, 4)
-
-        # rounds 1..T-1: all 8 ancilla XOR
-        for r in range(1, rounds):
-            det_list.append(ancilla_meas[r] ^ ancilla_meas[r - 1])  # (shots, 8)
 
         # --- 최종 data qubit 측정 (항상 hard — label 누출 방지) ---
         if noise.p_meas > 0:
@@ -223,18 +223,14 @@ class PauliPlusSimulator(BaseSimulator):
         data_meas = measure_z_batch_nb(frame.frame, layout.data_arr,
                                        rng.random((shots, n_data)))
 
-        # 최종 round data + 마지막 ancilla 조합 detectors
-        final_dets = layout.compute_final_detectors(data_meas, ancilla_meas[-1])
-        det_list.append(final_dets)  # (shots, 4)
-
-        syndromes = np.concatenate(det_list, axis=1)  # (shots, num_detectors)
-
-        # --- logical observable: data_order에서 logical_z_indices XOR ---
-        logical = np.zeros((shots, 1), dtype=bool)
-        for i in layout.logical_z_data_indices:
-            logical[:, 0] ^= data_meas[:, i]
-
-        erasures = np.zeros_like(syndromes, dtype=bool)
+        # --- 측정 기록을 stim 순서로 concat → m2d_converter로 detection events + observables 추출 ---
+        # Stim 측정 순서: MR_0, MR_1, ..., MR_{T-1}, M (final data).
+        # 우리 ancilla_meas[r]는 layout.ancilla_order (= 첫 MR 순서)로 기록되고,
+        # data_meas는 layout.data_order (= 최종 M 순서)로 기록되므로 그대로 concat 가능.
+        all_meas = np.concatenate([*ancilla_meas, data_meas], axis=1).astype(bool)
+        syndromes, logical = layout._m2d_converter.convert(
+            measurements=all_meas, separate_observables=True
+        )
 
         # soft_measurements: (shots, rounds, n_ancilla) float — IQ on일 때만
         if use_iq and soft_meas_rounds:
@@ -245,7 +241,6 @@ class PauliPlusSimulator(BaseSimulator):
         return {
             'syndromes':         syndromes,
             'observables':       logical,
-            'erasures':          erasures,
             'soft_measurements': soft_measurements,
             'leakage_flags':     None,   # Phase 3
         }
@@ -256,10 +251,12 @@ class PauliPlusSimulator(BaseSimulator):
 # ------------------------------------------------------------------ #
 
 def _reset(frame: PauliFrame, qubits, p: float, rng):
-    """Reset to |0⟩ (clear frame), then apply bitflip noise."""
-    for q in qubits:
-        frame.frame[:, q] = 0
-        bitflip(frame, q, p, rng)
+    """Reset to |0⟩ (frame 클리어) + bitflip 노이즈. qubits는 np.int32 배열 권장."""
+    q_arr = qubits if isinstance(qubits, np.ndarray) else np.array(qubits, dtype=np.int32)
+    frame.frame[:, q_arr] = 0
+    if p > 0:
+        bitflip_batch_nb(frame.frame, q_arr, p,
+                         rng.random((frame.n_shots, len(q_arr))), PAULI_MUL)
 
 
 # ------------------------------------------------------------------ #
@@ -272,72 +269,54 @@ class _SurfaceCodeLayout:
     노이즈 없는 회로만 사용 — Pauli frame이 에러를 직접 추적.
     """
 
-    def __init__(self, d: int, rounds: int):
+    def __init__(self, d: int, rounds: int, *, circuit):
+        if circuit is None:
+            raise ValueError(
+                "_SurfaceCodeLayout requires a stim.Circuit (PauliPlusSimulator는 "
+                "code.name으로 등록된 빌더에서 자동 생성. 빌더가 없으면 등록 필요)."
+            )
         self.d = d
         self.rounds = rounds
-
-        circ = stim.Circuit.generated(
-            "surface_code:rotated_memory_z",
-            distance=d, rounds=rounds,
-            after_clifford_depolarization=0,
-            before_measure_flip_probability=0,
-        )
+        circ = circuit
+        self._reference_circuit = circ
+        # m2d_converter는 raw 측정 → (detection events, observables)를 Stim의 정확한
+        # detector 정의에 맞게 변환. 우리가 round 0 / round R / final 분기 logic을
+        # 직접 만들 필요 없음 — 어떤 stim 회로(memory_x, color_code 등)든 자동.
+        self._m2d_converter = circ.compile_m2d_converter()
         self.n_qubits = circ.num_qubits
+        self.num_observables = circ.num_observables
         coords = circ.get_final_qubit_coordinates()
         self.qubit_coords = coords  # get_ancilla_coordinates() 재사용
 
-        # --- qubit 분류 ---
-        # data: both x,y odd;  ancilla: at least one even
-        x_ancilla_set = self._get_x_ancilla(circ)
-        data, z_anc, x_anc = [], [], []
-
-        for qi, (x, y) in sorted(coords.items()):
-            if int(x) % 2 == 1 and int(y) % 2 == 1:
-                data.append(qi)
-            elif qi in x_ancilla_set:
-                x_anc.append(qi)
-            else:
-                z_anc.append(qi)
-
-        self.data_qubits  = data
-        self.x_ancilla    = x_anc
-        self.z_ancilla    = z_anc
-        self.n_data       = len(data)
-        self.n_ancilla    = len(x_anc) + len(z_anc)
-
-        # ancilla_order = Stim MR 순서 (detection event 정의와 일치해야 함)
+        # --- qubit 분류 (회로 자체에서 추출 — 좌표 parity 의존 없음) ---
+        # ancilla = 첫 MR 명령의 targets, data = 최종 M 명령의 targets,
+        # X-ancilla = ancilla 중 H 받는 큐빗.
+        # 이 방식이 rotated CSS / unrotated / XZZX 등 어떤 stim 회로든 작동.
         self.ancilla_order = self._get_mr_order(circ)
-
-        # z_ancilla_indices_in_order: ancilla_order에서 Z-ancilla의 인덱스
-        z_set = set(z_anc)
-        self.z_ancilla_indices_in_order = [
-            i for i, q in enumerate(self.ancilla_order) if q in z_set
-        ]
-
-        # data_order = Stim M (최종 data 측정) 순서
         self.data_order = self._get_m_order(circ)
+
+        x_ancilla_set = self._get_x_ancilla(circ)
+        self.data_qubits = list(self.data_order)
+        self.x_ancilla = [q for q in self.ancilla_order if q in x_ancilla_set]
+        self.z_ancilla = [q for q in self.ancilla_order if q not in x_ancilla_set]
+        self.n_data = len(self.data_qubits)
+        self.n_ancilla = len(self.ancilla_order)
 
         # all_qubits = frame에서 사용하는 모든 qubit 인덱스
         self.all_qubits = list(coords.keys())
+        self.all_qubits_arr = np.array(self.all_qubits, dtype=np.int32)
 
         # CX layers: 4 sub-layers, 순서 보존
         self.cx_layers = self._get_cx_layers(circ)
 
-        # logical Z: data_order에서 observable에 포함된 인덱스
-        self.logical_z_data_indices = self._get_logical_z_indices(circ, self.data_order)
-
-        # 최종 detector 정의 (data + ancilla 조합)
-        self._final_det_defs = self._get_final_detector_defs(circ, self.data_order, self.ancilla_order)
-
-        # num_detectors: round1(4) + (rounds-1)*8 + final(4)
-        self.num_detectors = len(self.z_ancilla_indices_in_order) \
-                           + (rounds - 1) * self.n_ancilla \
-                           + len(self._final_det_defs)
+        # logical Z 정보는 m2d_converter가 자체 처리하므로 별도 추출 불필요.
+        # detector 수도 stim에서 직접.
+        self.num_detectors = circ.num_detectors
 
         # --- 배치 연산용 numpy 배열 (미리 계산) ---
-        self.x_ancilla_arr    = np.array(x_anc,                dtype=np.int32)
+        self.x_ancilla_arr    = np.array(self.x_ancilla,       dtype=np.int32)
         self.ancilla_order_arr = np.array(self.ancilla_order,  dtype=np.int32)
-        self.data_arr         = np.array(data,                 dtype=np.int32)
+        self.data_arr         = np.array(self.data_qubits,     dtype=np.int32)
 
         # CX sub-layer별 (ctrls, tgts) numpy 배열
         self.cx_layer_arrays = [
@@ -355,21 +334,13 @@ class _SurfaceCodeLayout:
             self.idle_per_layer.append(np.array(idle, dtype=np.int32))
             self.active_per_layer.append(np.array(sorted(active), dtype=np.int32))
 
-    def compute_final_detectors(self, data_meas: np.ndarray,
-                                 last_ancilla_meas: np.ndarray) -> np.ndarray:
-        """
-        data_meas: (shots, n_data), last_ancilla_meas: (shots, n_ancilla)
-        반환: (shots, n_final_dets)
-        """
-        shots = data_meas.shape[0]
-        result = np.zeros((shots, len(self._final_det_defs)), dtype=bool)
-        for col, indices in enumerate(self._final_det_defs):
-            for src, idx in indices:
-                if src == 'data':
-                    result[:, col] ^= data_meas[:, idx]
-                else:
-                    result[:, col] ^= last_ancilla_meas[:, idx]
-        return result
+        # sub-layer별 crosstalk pair 배열 + leakage 큐빗 배열 (한 번만 계산)
+        self.crosstalk_pair_arrays = []           # list of (q0_arr, q1_arr)
+        self.crosstalk_leakage_qubit_arrays = []  # list of qubit_arr
+        for layer in self.cx_layers:
+            q0, q1, leak_q = build_crosstalk_arrays(layer)
+            self.crosstalk_pair_arrays.append((q0, q1))
+            self.crosstalk_leakage_qubit_arrays.append(leak_q)
 
     # ------------------------------------------------------------------ #
     # Stim 회로 파싱                                                       #
@@ -432,48 +403,3 @@ class _SurfaceCodeLayout:
                                    for i in range(0, len(targets), 2)])
         return layers
 
-    def _get_logical_z_indices(self, circ, data_order: list) -> list:
-        """OBSERVABLE_INCLUDE의 rec 오프셋 → data_order 인덱스로 변환."""
-        n_data = len(data_order)
-        indices = []
-        for inst in circ.flattened():
-            if inst.name == 'OBSERVABLE_INCLUDE':
-                for t in inst.targets_copy():
-                    # rec[-k]: data_order의 (n_data + t.value) 번째 (t.value < 0)
-                    idx = n_data + t.value  # t.value는 음수
-                    if 0 <= idx < n_data:
-                        indices.append(idx)
-        return indices
-
-    def _get_final_detector_defs(self, circ, data_order: list, ancilla_order: list) -> list:
-        """
-        최종 라운드 DETECTOR 정의를 파싱.
-        각 detector = [(src, idx), ...] 형태의 리스트.
-        src: 'data' or 'ancilla'
-        """
-        n_data    = len(data_order)
-        n_ancilla = len(ancilla_order)
-
-        # 마지막 M 명령 이후의 DETECTOR만 추출
-        insts = list(circ.flattened())
-        last_m_pos = max(i for i, inst in enumerate(insts) if inst.name == 'M')
-
-        defs = []
-        for inst in insts[last_m_pos + 1:]:
-            if inst.name != 'DETECTOR':
-                continue
-            det = []
-            for t in inst.targets_copy():
-                offset = t.value  # 음수 (rec 오프셋)
-                # M은 n_data 개, 그 이전 MR은 n_ancilla 개
-                # rec[-1] ~ rec[-n_data]: data
-                # rec[-n_data-1] ~ rec[-n_data-n_ancilla]: last ancilla
-                if offset >= -n_data:
-                    idx = n_data + offset
-                    det.append(('data', idx))
-                else:
-                    idx = n_data + n_ancilla + offset
-                    if 0 <= idx < n_ancilla:
-                        det.append(('ancilla', idx))
-            defs.append(det)
-        return defs

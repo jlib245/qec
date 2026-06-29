@@ -28,20 +28,26 @@ PAULI_MUL = _PM
 
 I, X, Y, Z, L2, L3 = 0, 1, 2, 3, 4, 5
 
-# CX conjugation table: CX_TABLE[p_control, p_target] = (new_control, new_target)
-# Derived from Heisenberg picture: X_c→X_cX_t, Z_t→Z_cZ_t
+# CX conjugation table: CX_C[p_control, p_target] = new_control,
+# CX_T[p_control, p_target] = new_target (Heisenberg: X_c→X_cX_t, Z_t→Z_cZ_t).
+# The flat list is laid out as [ft, fc] (target outer, control inner), so we
+# transpose after reshape so callers can index as [fc, ft] = [control, target].
 _CX_RAW = [
-    # (I,I),(X,I),(Y,I),(Z,I)
+    # ft=I row, varying fc=I,X,Y,Z
     (I,I),(X,X),(Y,X),(Z,I),
-    # (I,X),(X,X),(Y,X),(Z,X)
+    # ft=X row
     (I,X),(X,I),(Y,I),(Z,X),
-    # (I,Y),(X,Y),(Y,Y),(Z,Y)
+    # ft=Y row
     (Z,Y),(Y,Z),(X,Z),(I,Y),
-    # (I,Z),(X,Z),(Y,Z),(Z,Z)
+    # ft=Z row
     (Z,Z),(Y,Y),(X,Y),(I,Z),
 ]
-_CX_C = np.array([v[0] for v in _CX_RAW], dtype=np.int8).reshape(4, 4)
-_CX_T = np.array([v[1] for v in _CX_RAW], dtype=np.int8).reshape(4, 4)
+_CX_C = np.ascontiguousarray(
+    np.array([v[0] for v in _CX_RAW], dtype=np.int8).reshape(4, 4).T
+)
+_CX_T = np.ascontiguousarray(
+    np.array([v[1] for v in _CX_RAW], dtype=np.int8).reshape(4, 4).T
+)
 
 class _CXTable:
     """Allows CX_TABLE[fc, ft] → (new_c, new_t) via numpy fancy indexing."""

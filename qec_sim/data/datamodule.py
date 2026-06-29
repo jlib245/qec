@@ -1,8 +1,42 @@
 # qec_sim/data/datamodule.py
 import torch
 import numpy as np
-from torch.utils.data import Dataset, DataLoader, IterableDataset
+from torch.utils.data import Dataset, DataLoader, IterableDataset, Sampler
 from typing import Callable, Optional, List, Tuple, Union
+
+
+class CursorShuffleSampler(Sampler[int]):
+    """전체 인덱스를 한 번 셔플한 뒤 epoch 경계와 무관하게 cursor가 이어진다.
+
+    매 epoch당 `samples_per_epoch`개 인덱스를 yield하고, cursor가 끝에 도달하면
+    새로 셔플한 다음 처음부터 다시 yield. dataset_size = N, samples_per_epoch = M
+    이면 ⌈N/M⌉ epoch이 한 "전체 순회 사이클" — 그 동안은 같은 샘플이 두 번 안 나옴.
+    """
+
+    def __init__(self, dataset_size: int, samples_per_epoch: int, seed: Optional[int] = None):
+        self.N = dataset_size
+        self.M = samples_per_epoch
+        self.gen = torch.Generator()
+        if seed is not None:
+            self.gen.manual_seed(seed)
+        self.perm = torch.randperm(self.N, generator=self.gen)
+        self.cursor = 0
+
+    def __iter__(self):
+        end = self.cursor + self.M
+        if end <= self.N:
+            indices = self.perm[self.cursor:end]
+            self.cursor = end
+        else:
+            tail = self.perm[self.cursor:]
+            self.perm = torch.randperm(self.N, generator=self.gen)
+            need = self.M - len(tail)
+            indices = torch.cat([tail, self.perm[:need]])
+            self.cursor = need
+        yield from indices.tolist()
+
+    def __len__(self):
+        return self.M
 
 
 def _worker_init_fn(worker_id: int):
@@ -15,9 +49,15 @@ def _worker_init_fn(worker_id: int):
 
 
 class QECRawDataset(Dataset):
-    """전처리기가 명시한 데이터만 하드디스크에서 꺼내어 cpu_transform을 거쳐 반환합니다."""
+    """전처리기가 명시한 데이터만 하드디스크에서 꺼내어 cpu_transform을 거쳐 반환합니다.
 
-    def __init__(self, npz_path: str, required_keys: List[str], cpu_transform: Optional[Callable] = None):
+    coset_lut 가 주어지면 observables → coset label (class index) 로 변환.
+    online path 의 OnlineQECDataset._yield_chunk_batches 와 대칭이라 동일 .npz 가
+    coset / non-coset 양쪽에서 그대로 재사용 가능.
+    """
+
+    def __init__(self, npz_path: str, required_keys: List[str],
+                 cpu_transform: Optional[Callable] = None, coset_lut=None):
         data = np.load(npz_path)
 
         self.data_dict = {}
@@ -31,11 +71,21 @@ class QECRawDataset(Dataset):
 
         # 'observables' 또는 'logical_outcomes' 키 모두 지원
         if 'observables' in data:
-            self.labels = torch.tensor(data['observables'])
+            obs = data['observables']
         elif 'logical_outcomes' in data:
-            self.labels = torch.tensor(data['logical_outcomes'])
+            obs = data['logical_outcomes']
         else:
             raise ValueError(f"라벨 키('observables' 또는 'logical_outcomes')가 데이터셋에 없습니다. 파일 내 키: {list(data.keys())}")
+
+        if coset_lut is not None:
+            if 'syndromes' not in data:
+                raise ValueError(
+                    "coset_mode 사용 시 .npz 에 'syndromes' 키 필수 (coset label 계산용)."
+                )
+            from qec_sim.decoders.lut import compute_coset_labels
+            self.labels = torch.from_numpy(compute_coset_labels(data['syndromes'], obs, coset_lut))
+        else:
+            self.labels = torch.tensor(obs)
 
         self.cpu_transform = cpu_transform
 
@@ -52,10 +102,12 @@ class QECRawDataset(Dataset):
 class OfflineDataStrategy:
     """오프라인 .npz 파일에서 데이터를 로드하는 전략."""
 
-    def __init__(self, config, required_keys: List[str], cpu_transform: Optional[Callable] = None):
+    def __init__(self, config, required_keys: List[str],
+                 cpu_transform: Optional[Callable] = None, coset_lut=None):
         self.config = config
         self.required_keys = required_keys
         self.cpu_transform = cpu_transform
+        self.coset_lut = coset_lut
         self._train_dataset: Optional[QECRawDataset] = None
         self._val_dataset: Optional[QECRawDataset] = None
 
@@ -65,11 +117,13 @@ class OfflineDataStrategy:
             npz_path=tc.train_path,
             required_keys=self.required_keys,
             cpu_transform=self.cpu_transform,
+            coset_lut=self.coset_lut,
         )
         self._val_dataset = QECRawDataset(
             npz_path=tc.val_path,
             required_keys=self.required_keys,
             cpu_transform=self.cpu_transform,
+            coset_lut=self.coset_lut,
         )
 
     def get_loaders(self) -> Tuple[DataLoader, DataLoader]:
@@ -80,14 +134,27 @@ class OfflineDataStrategy:
         # num_workers=0 이면 prefetch_factor 사용 불가
         pf = tc.prefetch_factor if tc.num_workers > 0 else None
 
+        # epoch_fraction 유효성은 TrainingConfig.__post_init__에서 이미 검증됨.
+        N = len(self._train_dataset)
+        samples_per_epoch = int(N * tc.epoch_fraction)
+        train_sampler = CursorShuffleSampler(
+            dataset_size=N,
+            samples_per_epoch=samples_per_epoch,
+            seed=tc.seed,
+        )
+        # persistent_workers=True: workers stay alive across epochs so we
+        # avoid re-forking from a parent that may carry tens of GB of RSS
+        # (cached datasets sit in RAM). Without this, fork can deadlock.
+        persist = tc.num_workers > 0
         train_loader = DataLoader(
             self._train_dataset,
             batch_size=tc.batch_size,
-            shuffle=True,
+            sampler=train_sampler,
             num_workers=tc.num_workers,
             pin_memory=tc.pin_memory,
             prefetch_factor=pf,
             worker_init_fn=_worker_init_fn if tc.num_workers > 0 else None,
+            persistent_workers=persist,
         )
         val_loader = DataLoader(
             self._val_dataset,
@@ -97,12 +164,18 @@ class OfflineDataStrategy:
             pin_memory=tc.pin_memory,
             prefetch_factor=pf,
             worker_init_fn=_worker_init_fn if tc.num_workers > 0 else None,
+            persistent_workers=persist,
         )
         return train_loader, val_loader
 
 
 class OnlineQECDataset(IterableDataset):
-    """시뮬레이터에서 on-the-fly로 데이터를 생성하는 IterableDataset."""
+    """시뮬레이터에서 on-the-fly로 데이터를 생성하는 IterableDataset.
+
+    chunk(시뮬 1회 호출분)를 받아 batch_size 단위 슬라이스로 yield.
+    DataLoader는 batch_size=None으로 받아 collate 없이 그대로 통과 →
+    sample-by-sample yield + collate 라운드트립 제거.
+    """
 
     def __init__(
         self,
@@ -110,6 +183,7 @@ class OnlineQECDataset(IterableDataset):
         required_keys: List[str],
         epoch_samples: int,
         chunk_size: int,
+        batch_size: int,
         cpu_transform: Optional[Callable] = None,
         cover_all_simulators: bool = False,
         coset_lut=None,
@@ -118,17 +192,18 @@ class OnlineQECDataset(IterableDataset):
         self.required_keys = required_keys
         self.epoch_samples = epoch_samples
         self.chunk_size = chunk_size
+        self.batch_size = batch_size
         self.cpu_transform = cpu_transform
         self.cover_all_simulators = cover_all_simulators
         self.coset_lut = coset_lut
 
-    def _yield_chunk(self, raw):
-        """chunk 단위로 텐서 변환 + 라벨 계산 후 sample별로 yield."""
+    def _yield_chunk_batches(self, raw):
+        """chunk를 batch_size 단위로 슬라이스해 (batch_dict, batch_labels) yield."""
         n = len(raw['observables'])
 
-        # chunk 전체를 한 번에 텐서로 변환
+        # zero-copy view — trainer가 .float()로 변환하므로 여기서는 dtype 유지.
         tensors = {
-            k: torch.from_numpy(raw[k]).float()
+            k: torch.from_numpy(raw[k])
             for k in self.required_keys
             if k in raw
         }
@@ -139,13 +214,24 @@ class OnlineQECDataset(IterableDataset):
                 compute_coset_labels(raw['syndromes'], raw['observables'], self.coset_lut)
             )
         else:
-            label_arr = torch.from_numpy(raw['observables']).float()
+            label_arr = torch.from_numpy(raw['observables'])
 
-        for i in range(n):
-            sample = {k: v[i] for k, v in tensors.items()}
+        bs = self.batch_size
+        for start in range(0, n, bs):
+            end = min(start + bs, n)
+            batch = {k: t[start:end] for k, t in tensors.items()}
+            labels = label_arr[start:end]
             if self.cpu_transform:
-                sample = self.cpu_transform(sample)
-            yield sample, label_arr[i]
+                batch = self.cpu_transform(batch)
+            # Optional filter: preprocessor injects `_keep_mask` (e.g. gap-routed
+            # fine-tuning keeps only gap < threshold). Apply to batch + labels.
+            if "_keep_mask" in batch:
+                mask = batch.pop("_keep_mask")
+                if mask.sum() == 0:
+                    continue
+                batch = {k: v[mask] for k, v in batch.items()}
+                labels = labels[mask]
+            yield batch, labels
 
     def __iter__(self):
         worker_info = torch.utils.data.get_worker_info()
@@ -154,6 +240,13 @@ class OnlineQECDataset(IterableDataset):
         else:
             num_workers = worker_info.num_workers
             worker_id = worker_info.id
+            # fork된 워커들은 simulator.rng 상태를 공유하므로 워커별 reseed 필수.
+            # PyTorch가 epoch마다 새 base_seed를 뽑으므로 epoch 간 다양성도 확보됨.
+            base_seed = torch.initial_seed() % (2 ** 32)
+            ss = np.random.SeedSequence([base_seed, worker_id])
+            sims = self.simulator_pool.get_all_simulators()
+            for sim, child in zip(sims, ss.spawn(len(sims))):
+                sim.reseed(child)
 
         if self.cover_all_simulators:
             yield from self._iter_all_simulators(num_workers, worker_id)
@@ -177,13 +270,10 @@ class OnlineQECDataset(IterableDataset):
             per_worker = self._worker_samples(per_sim, num_workers, worker_id)
             generated = 0
             while generated < per_worker:
-                batch = min(self.chunk_size, per_worker - generated)
-                raw = sim.generate_data(batch)
-                for sample, label in self._yield_chunk(raw):
-                    yield sample, label
-                    generated += 1
-                    if generated >= per_worker:
-                        break
+                n_get = min(self.chunk_size, per_worker - generated)
+                raw = sim.generate_data(n_get)
+                yield from self._yield_chunk_batches(raw)
+                generated += n_get
 
     def _iter_random(self, num_workers, worker_id):
         """랜덤 시뮬레이터로 데이터 생성 (기존 동작)."""
@@ -191,13 +281,10 @@ class OnlineQECDataset(IterableDataset):
         generated = 0
         while generated < per_worker:
             sim = self.simulator_pool.get_random_simulator()
-            batch = min(self.chunk_size, per_worker - generated)
-            raw = sim.generate_data(batch)
-            for sample, label in self._yield_chunk(raw):
-                yield sample, label
-                generated += 1
-                if generated >= per_worker:
-                    break
+            n_get = min(self.chunk_size, per_worker - generated)
+            raw = sim.generate_data(n_get)
+            yield from self._yield_chunk_batches(raw)
+            generated += n_get
 
 
 class OnlineDataStrategy:
@@ -215,8 +302,9 @@ class OnlineDataStrategy:
 
     def prepare(self) -> None:
         tc = self.config.training
-        train_samples = tc.train_steps or 10000
-        val_samples = tc.val_steps or 2000
+        # train_steps/val_steps 유효성은 TrainingConfig.__post_init__에서 검증.
+        train_samples = tc.train_steps
+        val_samples = tc.val_steps
 
         # val_steps를 시뮬레이터 수의 배수로 올림 (균등 분배 보장)
         num_sims = len(self.simulator_pool.get_all_simulators())
@@ -228,6 +316,7 @@ class OnlineDataStrategy:
             required_keys=self.required_keys,
             epoch_samples=train_samples,
             chunk_size=tc.chunk_size,
+            batch_size=tc.batch_size,
             cpu_transform=self.cpu_transform,
             coset_lut=self.coset_lut,
         )
@@ -236,6 +325,7 @@ class OnlineDataStrategy:
             required_keys=self.required_keys,
             epoch_samples=val_samples,
             chunk_size=tc.chunk_size,
+            batch_size=tc.batch_size,
             cpu_transform=self.cpu_transform,
             cover_all_simulators=True,
             coset_lut=self.coset_lut,
@@ -248,9 +338,10 @@ class OnlineDataStrategy:
         tc = self.config.training
         pf = tc.prefetch_factor if tc.num_workers > 0 else None
 
+        # batch_size=None: dataset이 이미 batch 단위로 yield하므로 collate 안 함.
         train_loader = DataLoader(
             self._train_dataset,
-            batch_size=tc.batch_size,
+            batch_size=None,
             num_workers=tc.num_workers,
             pin_memory=tc.pin_memory,
             prefetch_factor=pf,
@@ -258,7 +349,7 @@ class OnlineDataStrategy:
         )
         val_loader = DataLoader(
             self._val_dataset,
-            batch_size=tc.batch_size,
+            batch_size=None,
             num_workers=tc.num_workers,
             pin_memory=tc.pin_memory,
             prefetch_factor=pf,

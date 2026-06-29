@@ -1,11 +1,41 @@
 # qec_sim/trainer/trainer.py
+import os
 import torch
 from qec_sim.metrics.evaluator import coerce_label_dtype
+
+
+# Env-driven knobs (default off to avoid breaking previous runs):
+#   QEC_USE_COMPILE=1     → torch.compile core model (1.5–2× via kernel fusion)
+#   QEC_AMP_DTYPE=bf16    → bfloat16 mixed-precision autocast (RTX 4090 native)
+_USE_COMPILE = os.environ.get("QEC_USE_COMPILE", "0") == "1"
+_AMP_DTYPE_STR = os.environ.get("QEC_AMP_DTYPE", "").lower()
+_AMP_DTYPE = {
+    "bf16": torch.bfloat16,
+    "fp16": torch.float16,
+}.get(_AMP_DTYPE_STR, None)
+
+
+def _autocast_ctx(device: torch.device):
+    """Return autocast context if AMP enabled and on CUDA, else null context."""
+    if _AMP_DTYPE is None or device.type != "cuda":
+        import contextlib
+        return contextlib.nullcontext()
+    return torch.autocast(device_type="cuda", dtype=_AMP_DTYPE)
 
 
 class Trainer:
     def __init__(self, wrapped_model, evaluator, train_loader, val_loader,
                  optimizer, scheduler, callbacks, train_steps, val_steps):
+        # Opt-in compile of the heavy compute (core model only — preprocessor's
+        # scatter ops sometimes confuse torch.compile dynamic shape detection).
+        if _USE_COMPILE and hasattr(wrapped_model, "core_model"):
+            wrapped_model.core_model = torch.compile(
+                wrapped_model.core_model, mode="reduce-overhead"
+            )
+            print(f"  [trainer] torch.compile enabled on core_model")
+        if _AMP_DTYPE is not None:
+            print(f"  [trainer] AMP enabled with dtype={_AMP_DTYPE}")
+
         self.model = wrapped_model
         self.evaluator = evaluator
         self.device = evaluator.device
@@ -19,11 +49,22 @@ class Trainer:
         self.stop_training = False
 
     def train_epoch(self):
+        from tqdm.auto import tqdm
         self.model.train()
         total_loss = 0.0
         num_steps = 0
 
-        for step, (batch_dict, labels) in enumerate(self.train_loader):
+        # train_steps가 있으면 그걸 total로, 아니면 loader 길이 (IterableDataset은 len 없음).
+        if self.train_steps:
+            total = self.train_steps
+        else:
+            try:
+                total = len(self.train_loader)
+            except TypeError:
+                total = None
+        pbar = tqdm(self.train_loader, total=total, desc='train', leave=False, dynamic_ncols=True)
+
+        for step, (batch_dict, labels) in enumerate(pbar):
             if self.train_steps and step >= self.train_steps:
                 break
 
@@ -31,13 +72,16 @@ class Trainer:
             y = coerce_label_dtype(labels.to(self.device))
 
             self.optimizer.zero_grad()
-            outputs = self.model(batch_data)
-            loss = self.evaluator.criterion(outputs, y)
+            with _autocast_ctx(self.device):
+                outputs = self.model(batch_data)
+                loss = self.evaluator.criterion(outputs, y)
             loss.backward()
             self.optimizer.step()
 
             total_loss += loss.item()
             num_steps += 1
+            if num_steps % 10 == 0:
+                pbar.set_postfix(loss=f"{total_loss/num_steps:.4f}")
 
         return total_loss / max(num_steps, 1)
 

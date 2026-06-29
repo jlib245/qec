@@ -18,7 +18,6 @@ class NoiseParams:
     p_gate: Union[float, List[float]]
     p_meas: Union[float, List[float]]
     p_corr: Union[float, List[float]]
-    p_leak: Union[float, List[float]]
 
 
 @dataclass
@@ -60,6 +59,11 @@ class PauliPlusNoiseParams:
     p_crosstalk: float = 0.0                 # 논문값: 9.5e-4 (Nature 614 Table I)
     crosstalk_alpha: float = 0.25            # Bausch 스케일: 0.25, 원래: 1.0
     crosstalk_leakage_rate: float = 0.0      # crosstalk 유래 leakage 확률
+
+    # 게이트 시간 [μs] — heating(rate × time) 및 측정 중 T1 decay 계산에 사용.
+    # 기본값은 SI1000 표준 (CX 50 ns × 4 sub-layer = 200 ns/round, 측정 500 ns).
+    t_cx_us: float = 0.05                    # CX sub-layer 1개 시간
+    t_meas_us: float = 0.5                   # data qubit 측정 시간
 
     # 개별 강도 override (None이면 p 기반 derived 값 사용, 검증/디버깅용)
     p_idle_override: float | None = None
@@ -105,6 +109,7 @@ class TrainingConfig:
     # offline 전용
     train_path: Optional[str] = None
     val_path: Optional[str] = None
+    epoch_fraction: Optional[float] = None  # epoch당 데이터셋의 몇 분의 1을 볼지 (0~1]
     # online 전용 (epoch당 생성할 샘플 수)
     train_steps: Optional[int] = None
     val_steps: Optional[int] = None
@@ -116,14 +121,47 @@ class TrainingConfig:
     scheduler: Optional[Dict[str, Any]] = None
     seed: Optional[int] = None
 
+    def __post_init__(self):
+        if self.data_mode == "offline":
+            if self.epoch_fraction is None:
+                raise ValueError(
+                    "offline 모드는 training.epoch_fraction 명시 필수 "
+                    "(예: 0.2 = 데이터셋의 1/5을 한 epoch로 본다, 1.0 = 전체)."
+                )
+            if not (0.0 < self.epoch_fraction <= 1.0):
+                raise ValueError(
+                    f"training.epoch_fraction은 (0, 1] 범위여야 합니다. 받은 값: {self.epoch_fraction}"
+                )
+            if self.train_steps is not None:
+                raise ValueError(
+                    "training.train_steps는 online 전용입니다. offline에선 epoch_fraction을 쓰세요."
+                )
+            if self.val_steps is not None:
+                raise ValueError(
+                    "training.val_steps는 online 전용입니다."
+                )
+        elif self.data_mode == "online":
+            if self.train_steps is None or self.train_steps <= 0:
+                raise ValueError(
+                    f"online 모드는 training.train_steps 양의 정수 필수. 받은 값: {self.train_steps}"
+                )
+            if self.val_steps is None or self.val_steps <= 0:
+                raise ValueError(
+                    f"online 모드는 training.val_steps 양의 정수 필수. 받은 값: {self.val_steps}"
+                )
+            if self.epoch_fraction is not None:
+                raise ValueError(
+                    "training.epoch_fraction은 offline 전용입니다."
+                )
+
 
 @dataclass
 class ModelConfig:
     name: str
-    use_erasures: bool = True
     coset_mode: bool = False
     kwargs: Dict[str, Any] = field(default_factory=dict)
     preprocessor: Dict[str, Any] = field(default_factory=dict)
+    pretrained: Optional[str] = None  # path to .pth for fine-tuning
 
 
 @dataclass
@@ -134,13 +172,48 @@ class DecoderConfig:
 
 
 @dataclass
+class SimulationConfig:
+    """`simulation:` yaml 블록의 타입 명시 표현.
+
+    backend: 'stim' 또는 'pauli_plus' (필수)
+    shots:   레거시 필드 (현재 코드에서는 미사용 — eval shots는 CLI 인자 사용)
+    pauli_plus: backend='pauli_plus'일 때 노이즈 dict.
+                list-valued 필드 cartesian 확장을 위해 raw dict 유지.
+                키는 PauliPlusNoiseParams 필드와 일치해야 함 (from_yaml에서 검증).
+    """
+    backend: str
+    shots: Optional[int] = None
+    pauli_plus: Optional[Dict[str, Any]] = None
+
+
+@dataclass
+class MLflowConfig:
+    """`mlflow:` yaml 블록. 블록이 없거나 enable=False 면 mlflow 로깅은 비활성.
+
+    enable=True 일 때만 학습 중 mlflow run 이 열린다. 모든 필드는 schema 에
+    노출 — 사용 지점에서 getattr 기본값 같은 silent fallback 을 두지 말 것.
+    """
+    enable: bool = False
+    experiment_name: Optional[str] = None  # None → f"{code.name}_d{code.distance}" 자동 (per-code 컨벤션)
+    run_name: Optional[str] = None  # None → mlflow auto-generate
+    tags: Dict[str, str] = field(default_factory=dict)
+    tracking_uri: str = "sqlite:///mlruns.db"
+    artifact_location: Optional[str] = None  # None → ./mlartifacts/<exp_id>
+    # Model Registry (opt-in). 활성화 시 학습 종료 후 best model 을 registry 에 등록.
+    register_model: bool = False
+    registered_model_name: Optional[str] = None  # None → f"{model.name}_d{code.distance}"
+    register_alias: Optional[str] = None  # 새 version 에 박을 alias (예: "candidate")
+
+
+@dataclass
 class ExperimentConfig:
     code: CodeParams
     noise: NoiseParams
     training: TrainingConfig
     model: ModelConfig
     decoder: DecoderConfig
-    simulation: Dict[str, Any]
+    simulation: SimulationConfig
+    mlflow: MLflowConfig = field(default_factory=MLflowConfig)
 
     @classmethod
     def from_yaml(cls, path: str):
@@ -152,21 +225,70 @@ class ExperimentConfig:
             valid_keys = {f.name for f in dc.fields(datacls)}
             return {k: v for k, v in raw.items() if k in valid_keys}
 
+        sim_raw = data['simulation']
+        sim = SimulationConfig(
+            backend=sim_raw['backend'],
+            shots=sim_raw.get('shots'),
+            pauli_plus=sim_raw.get('pauli_plus'),
+        )
+        if sim.pauli_plus is not None:
+            valid = {f.name for f in dc.fields(PauliPlusNoiseParams)}
+            unknown = set(sim.pauli_plus) - valid
+            if unknown:
+                raise KeyError(
+                    f"simulation.pauli_plus에 알 수 없는 키: {unknown}. "
+                    f"PauliPlusNoiseParams 필드: {sorted(valid)}"
+                )
+
+        mlflow_raw = data.get('mlflow')
+        if mlflow_raw is None:
+            mlflow_cfg = MLflowConfig()
+        else:
+            valid = {f.name for f in dc.fields(MLflowConfig)}
+            unknown = set(mlflow_raw) - valid
+            if unknown:
+                raise KeyError(
+                    f"mlflow 블록에 알 수 없는 키: {unknown}. "
+                    f"MLflowConfig 필드: {sorted(valid)}"
+                )
+            mlflow_cfg = MLflowConfig(**mlflow_raw)
+
         return cls(
             code=CodeParams(**filter_fields(CodeParams, data['code'])),
             noise=NoiseParams(**filter_fields(NoiseParams, data['noise'])),
             training=TrainingConfig(**filter_fields(TrainingConfig, data['training'])),
             model=ModelConfig(**filter_fields(ModelConfig, data['model'])),
             decoder=DecoderConfig(**filter_fields(DecoderConfig, data['decoder'])),
-            simulation=data['simulation']
+            simulation=sim,
+            mlflow=mlflow_cfg,
         )
 
     def get_expanded_noise_configs(self) -> List[NoiseParams]:
         """리스트 형태 노이즈 설정을 Cartesian Product로 확장합니다."""
         n = self.noise
-        keys = ['p_gate', 'p_meas', 'p_corr', 'p_leak']
+        keys = ['p_gate', 'p_meas', 'p_corr']
         values = [
             getattr(n, k) if isinstance(getattr(n, k), list) else [getattr(n, k)]
             for k in keys
         ]
         return [NoiseParams(**dict(zip(keys, v))) for v in product(*values)]
+
+    def get_expanded_pauli_plus_configs(self) -> List["PauliPlusNoiseParams"]:
+        """simulation.pauli_plus의 list-valued 필드를 Cartesian product로 확장.
+        Stim 백엔드의 get_expanded_noise_configs와 동일한 컨벤션."""
+        pp_cfg = self.simulation.pauli_plus
+        if pp_cfg is None:
+            raise KeyError("simulation.pauli_plus 블록이 yaml에 없습니다.")
+        if not pp_cfg:
+            raise ValueError("simulation.pauli_plus 블록이 비어있습니다.")
+
+        list_fields = {k: v for k, v in pp_cfg.items() if isinstance(v, list)}
+        scalar_fields = {k: v for k, v in pp_cfg.items() if not isinstance(v, list)}
+
+        if not list_fields:
+            return [PauliPlusNoiseParams(**pp_cfg)]
+
+        keys = list(list_fields.keys())
+        values = [list_fields[k] for k in keys]
+        return [PauliPlusNoiseParams(**scalar_fields, **dict(zip(keys, combo)))
+                for combo in product(*values)]

@@ -19,6 +19,7 @@ class BaseCircuitBuilder(ABC):
 
 # 2. 데코레이터로 "surface_code"라는 이름 등록.
 @register_builder("surface_code")
+@register_builder("surface_code_basic")
 class SurfaceCodeBuilder(BaseCircuitBuilder):
     def __init__(self, code_params: CodeParams, noise_params: NoiseParams, **kwargs):
         """
@@ -30,7 +31,6 @@ class SurfaceCodeBuilder(BaseCircuitBuilder):
         self.p_gate = noise_params.p_gate[0] if isinstance(noise_params.p_gate, list) else noise_params.p_gate
         self.p_meas = noise_params.p_meas[0] if isinstance(noise_params.p_meas, list) else noise_params.p_meas
         self.p_corr = noise_params.p_corr[0] if isinstance(noise_params.p_corr, list) else noise_params.p_corr
-        self.p_leak = noise_params.p_leak[0] if isinstance(noise_params.p_leak, list) else noise_params.p_leak
 
     def build(self) -> stim.Circuit:
         """
@@ -43,7 +43,41 @@ class SurfaceCodeBuilder(BaseCircuitBuilder):
             rounds=self.code_params.rounds,
             after_clifford_depolarization=self.p_gate,
             before_measure_flip_probability=self.p_meas,
-            # p_leak은 simulator.py에서 별도 후처리, -> Herald Erasure로 처리 가능..? -> but 회로 다 뜯어야 할 것
             # p_corr은 현재 미구현.
         )
         return circuit
+
+
+@register_builder("surface_code_si1000")
+class SurfaceCodeSI1000Builder(BaseCircuitBuilder):
+    """
+    Canonical SI1000 (Gidney 2021) on top of stim's rotated_memory_z generator.
+
+    Step 1: zero-noise base circuit from stim.Circuit.generated.
+    Step 2: apply NoiseModel.SI1000(p) — 1q gate p/10, 2q gate p, idle p/10,
+            measure_reset_idle 2p, R 2p, M 5p — exactly matching the
+            honeycomb_threshold reference implementation.
+    """
+
+    def __init__(self, code_params: CodeParams, noise_params: NoiseParams, **kwargs):
+        super().__init__(code_params, noise_params, **kwargs)
+        self.p = noise_params.p_gate[0] if isinstance(noise_params.p_gate, list) else noise_params.p_gate
+
+    def build(self) -> stim.Circuit:
+        from qec_sim.circuit.noise_model import NoiseModel
+        base = stim.Circuit.generated(
+            "surface_code:rotated_memory_z",
+            distance=self.code_params.distance,
+            rounds=self.code_params.rounds,
+        )
+        return NoiseModel.SI1000(self.p).noisy_circuit(base)
+
+
+def build_si1000_canonical(distance: int, rounds: int, p: float) -> stim.Circuit:
+    """Convenience helper: build a canonical-SI1000 rotated_memory_z circuit."""
+    from qec_sim.circuit.noise_model import NoiseModel
+    base = stim.Circuit.generated(
+        "surface_code:rotated_memory_z",
+        distance=distance, rounds=rounds,
+    )
+    return NoiseModel.SI1000(p).noisy_circuit(base)

@@ -1,6 +1,19 @@
 # Created by https://www.toptal.com/developers/gitignore/api/visualstudiocode,linux,python
 # Edit at https://www.toptal.com/developers/gitignore?templates=visualstudiocode,linux,python
 
+### Claude Code ###
+.claude/settings.local.json
+.claude/memory/
+
+### Run logs ###
+nohup*.out
+
+### MLflow ###
+mlruns.db
+mlruns.db-journal
+mlruns/
+mlartifacts/
+
 ### Linux ###
 *~
 
@@ -217,5 +230,11 @@ experiments/
 datasets/
 Final_Results_/
 results/
+configs/
+data/*
+!data/bb_si1000/
+data/bb_si1000/*
+!data/bb_si1000/*.stim
+scripts/
 
-.claude/
+.claude/configs/

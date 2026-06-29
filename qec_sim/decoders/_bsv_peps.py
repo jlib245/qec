@@ -1,0 +1,286 @@
+"""BSV (Bravyi-Suchara-Vargo 2014) 텐서 네트워크 — unrotated d×d surface code의
+DQMLD 디코딩을 (2d-1)×(2d-1) PEPS로 구성. 본 모듈은 bit-flip on Z-memory 케이스만 다룸
+(depolarizing은 후속 단계).
+
+좌표:
+    격자 (x, y) ∈ [0, 2d-2]²
+    (x+y) 짝수      → 데이터 qubit (총 d²+(d-1)²개)
+    x 짝수, y 홀수  → Z stabilizer (총 d(d-1)개)
+    x 홀수, y 짝수  → X stabilizer (bit-flip엔 passive)
+    bottom 행 (y=0, x 짝수) → 논리 Z̄ 측정용 데이터 qubit (총 d개)
+
+텐서:
+    데이터 qubit: weighted COPY rank=#neighbors (+1 if bottom-row), `T[v,...,v] = (1-p, p)`
+    Z stab: parity, target = syndrome 비트
+    X stab: all-1 (bit-flip 채널에선 X stab 측정값 결정적이라 무관 — passive)
+    L_acc: bottom-row 데이터 qubit 모음의 XOR을 개방 인덱스 'L'로 산출
+
+Contract 결과: 개방 인덱스 'L' 차원 2의 텐서 → unnormalized P(L | s).
+"""
+from __future__ import annotations
+
+import itertools
+from dataclasses import dataclass
+from typing import Dict, List, Tuple
+
+import numpy as np
+import quimb.tensor as qtn
+
+Coord = Tuple[int, int]
+
+
+# ──────────────────────────────────────────────
+# Layout
+# ──────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class BSVLayout:
+    d: int
+    n: int                          # 격자 크기 = 2d - 1
+    data_qubits: Tuple[Coord, ...]
+    z_stabs: Tuple[Coord, ...]
+    x_stabs: Tuple[Coord, ...]
+    logical_data: Tuple[Coord, ...]  # bottom 행 데이터 qubit 모음 (logical Z̄ string)
+
+
+def bsv_layout(d: int) -> BSVLayout:
+    """d만 받아 (2d-1)² 격자에서 사이트 분류. stim/회로 의존성 없음."""
+    if d < 2:
+        raise ValueError(f"d must be >= 2, got {d}")
+    n = 2 * d - 1
+    data: List[Coord] = []
+    z: List[Coord] = []
+    x: List[Coord] = []
+    for x_ in range(n):
+        for y_ in range(n):
+            if (x_ + y_) % 2 == 0:
+                data.append((x_, y_))
+            elif y_ % 2 == 1:  # x_ % 2 == 0
+                z.append((x_, y_))
+            else:               # x_ % 2 == 1, y_ % 2 == 0
+                x.append((x_, y_))
+    logical = tuple((2 * i, 0) for i in range(d))
+    return BSVLayout(
+        d=d,
+        n=n,
+        data_qubits=tuple(data),
+        z_stabs=tuple(z),
+        x_stabs=tuple(x),
+        logical_data=logical,
+    )
+
+
+def neighbors(coord: Coord, n: int) -> List[Coord]:
+    """격자 안에서 NSEW 인접 좌표 (boundary는 자동 truncate)."""
+    x, y = coord
+    out = []
+    for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+        nx, ny = x + dx, y + dy
+        if 0 <= nx < n and 0 <= ny < n:
+            out.append((nx, ny))
+    return out
+
+
+def bond_name(a: Coord, b: Coord) -> str:
+    """두 사이트 사이의 bond 인덱스 이름 — 좌표 순서 무관(canonical)."""
+    if a > b:
+        a, b = b, a
+    return f"b_{a[0]}_{a[1]}__{b[0]}_{b[1]}"
+
+
+# ──────────────────────────────────────────────
+# 텐서 빌더
+# ──────────────────────────────────────────────
+
+def _parity_tensor(deg: int, target: int) -> np.ndarray:
+    """T[i_1, ..., i_deg] = 1 iff XOR(i_1, ..., i_deg) == target else 0."""
+    if deg == 0:
+        return np.array(1.0 if target == 0 else 0.0)
+    t = np.zeros((2,) * deg)
+    for idx in itertools.product([0, 1], repeat=deg):
+        if sum(idx) % 2 == target:
+            t[idx] = 1.0
+    return t
+
+
+def _copy_tensor(deg: int, p: float) -> np.ndarray:
+    """Weighted COPY: T[v,...,v] = (1-p) if v=0 else p; otherwise 0.
+
+    데이터 qubit의 X-error 변수가 인접 모든 bond에 동일하게 전파되는 구조.
+    """
+    if deg == 0:
+        return np.array(1.0)
+    t = np.zeros((2,) * deg)
+    t[(0,) * deg] = 1.0 - p
+    t[(1,) * deg] = p
+    return t
+
+
+# ──────────────────────────────────────────────
+# TN 조립
+# ──────────────────────────────────────────────
+
+def _build_bsv_tensors(
+    d: int,
+    p: float,
+    syndrome_at_zstab: Dict[Coord, int],
+) -> Tuple[List[qtn.Tensor], BSVLayout, Dict[Coord, int]]:
+    """공통 부분 — 데이터/Z/X stab 텐서 생성. logical 텐서는 별도 함수에서 추가."""
+    if not (0.0 <= p <= 1.0):
+        raise ValueError(f"p must be in [0, 1], got {p}")
+    layout = bsv_layout(d)
+    log_idx_of: Dict[Coord, int] = {c: i for i, c in enumerate(layout.logical_data)}
+
+    tensors: List[qtn.Tensor] = []
+
+    for c in layout.data_qubits:
+        nbrs = neighbors(c, layout.n)
+        inds = [bond_name(c, nb) for nb in nbrs]
+        if c in log_idx_of:
+            inds.append(f"log_{log_idx_of[c]}")
+        tensors.append(qtn.Tensor(_copy_tensor(len(inds), p), inds, tags=['data', f'D_{c[0]}_{c[1]}']))
+
+    for c in layout.z_stabs:
+        nbrs = neighbors(c, layout.n)
+        inds = [bond_name(c, nb) for nb in nbrs]
+        s = int(syndrome_at_zstab.get(c, 0)) & 1
+        tensors.append(qtn.Tensor(_parity_tensor(len(inds), s), inds, tags=['zstab', f'Z_{c[0]}_{c[1]}']))
+
+    for c in layout.x_stabs:
+        nbrs = neighbors(c, layout.n)
+        inds = [bond_name(c, nb) for nb in nbrs]
+        tensors.append(qtn.Tensor(np.ones((2,) * len(inds)), inds, tags=['xstab', f'X_{c[0]}_{c[1]}']))
+
+    return tensors, layout, log_idx_of
+
+
+def build_bsv_tn(
+    d: int,
+    p: float,
+    syndrome_at_zstab: Dict[Coord, int],
+) -> qtn.TensorNetwork:
+    """열린 'L' 인덱스가 있는 BSV TN. contract → (2,) 벡터 [P(L=0|s), P(L=1|s)].
+
+    검증/exact 비교용. BlockBP에는 `build_bsv_tn_for_class` (닫힌 per-class)를 사용.
+    """
+    tensors, _, _ = _build_bsv_tensors(d, p, syndrome_at_zstab)
+    log_inds = [f"log_{i}" for i in range(d)] + ["L"]
+    tensors.append(qtn.Tensor(_parity_tensor(d + 1, 0), log_inds, tags=['logical', 'L_acc']))
+    return qtn.TensorNetwork(tensors)
+
+
+def build_bsv_tn_for_class(
+    d: int,
+    p: float,
+    syndrome_at_zstab: Dict[Coord, int],
+    class_bit: int,
+) -> qtn.TensorNetwork:
+    """Paper-faithful 닫힌 per-class TN. contract → scalar = π(f_s L̄_β G).
+
+    class_bit ∈ {0, 1}:
+        0 = Ī coset (logical 안 뒤집힘)
+        1 = X̄ coset (logical 뒤집힘)
+
+    L_acc 텐서가 bottom-row 데이터 qubit의 XOR을 class_bit과 비교하는 parity 제약 —
+    개방 인덱스 없음. BlockBP의 표준 형식 (닫힌 TN의 scalar contraction).
+    """
+    if class_bit not in (0, 1):
+        raise ValueError(f"class_bit must be 0 or 1, got {class_bit}")
+    tensors, _, _ = _build_bsv_tensors(d, p, syndrome_at_zstab)
+    log_inds = [f"log_{i}" for i in range(d)]
+    tensors.append(qtn.Tensor(_parity_tensor(d, class_bit), log_inds, tags=['logical', 'L_acc']))
+    return qtn.TensorNetwork(tensors)
+
+
+def _lacc_mps_factors(d: int, class_bit: int) -> List[qtn.Tensor]:
+    """parity_tensor(d, class_bit)를 d개 rank-3 MPS factor로 인수분해.
+
+    부호변수 a_i = ⊕_{j≤i} v_j (cumulative parity). 사이트 텐서:
+        site 0: T[v_0, a_0]        = δ(a_0 = v_0)
+        site i: T[a_{i-1}, v_i, a_i] = δ(a_i = a_{i-1} ⊕ v_i)
+        site d-1: T[a_{d-2}, v_{d-1}] = δ(a_{d-2} ⊕ v_{d-1} = class_bit)
+
+    virtual bond name: `lacc_v_{i}` (사이트 i와 i+1 사이). phys leg name: `log_{i}`.
+    Bond dim 2 throughout — 인수분해 정확 (수학적으로 동치).
+    """
+    factors: List[qtn.Tensor] = []
+    if d == 1:
+        # d=1 — 단일 사이트, parity = class_bit constraint
+        arr = np.zeros((2,))
+        arr[class_bit] = 1.0
+        factors.append(qtn.Tensor(arr, [f"log_0"], tags=['logical', 'L_acc_0']))
+        return factors
+
+    # site 0: T[v_0, a_0] = δ(a_0 = v_0) — copy
+    arr0 = np.zeros((2, 2))
+    arr0[0, 0] = 1.0
+    arr0[1, 1] = 1.0
+    factors.append(qtn.Tensor(arr0, ["log_0", "lacc_v_0"], tags=['logical', 'L_acc_0']))
+
+    # 중간 사이트 i (0 < i < d-1): T[a_{i-1}, v_i, a_i] = δ(a_i = a_{i-1} ⊕ v_i)
+    for i in range(1, d - 1):
+        arr = np.zeros((2, 2, 2))
+        for a_prev in (0, 1):
+            for v in (0, 1):
+                a_new = a_prev ^ v
+                arr[a_prev, v, a_new] = 1.0
+        factors.append(qtn.Tensor(arr, [f"lacc_v_{i-1}", f"log_{i}", f"lacc_v_{i}"],
+                                  tags=['logical', f'L_acc_{i}']))
+
+    # site d-1: T[a_{d-2}, v_{d-1}] = δ(a_{d-2} ⊕ v_{d-1} = class_bit)
+    arr_last = np.zeros((2, 2))
+    for a_prev in (0, 1):
+        for v in (0, 1):
+            if (a_prev ^ v) == class_bit:
+                arr_last[a_prev, v] = 1.0
+    factors.append(qtn.Tensor(arr_last, [f"lacc_v_{d-2}", f"log_{d-1}"],
+                              tags=['logical', f'L_acc_{d-1}']))
+    return factors
+
+
+def build_bsv_tn_for_class_mps_factored(
+    d: int,
+    p: float,
+    syndrome_at_zstab: Dict[Coord, int],
+    class_bit: int,
+) -> qtn.TensorNetwork:
+    """POC: L_acc를 단일 rank-d 텐서 대신 d개 MPS factor (bond dim 2) chain으로.
+
+    contract 결과는 `build_bsv_tn_for_class`와 수학적으로 동치 (bit-identical 기대).
+    """
+    if class_bit not in (0, 1):
+        raise ValueError(f"class_bit must be 0 or 1, got {class_bit}")
+    tensors, _, _ = _build_bsv_tensors(d, p, syndrome_at_zstab)
+    tensors.extend(_lacc_mps_factors(d, class_bit))
+    return qtn.TensorNetwork(tensors)
+
+
+def contract_marginal(tn: qtn.TensorNetwork) -> np.ndarray:
+    """열린 'L' TN을 exact contract → (2,) 벡터 (정규화 안 됨)."""
+    result = tn.contract(output_inds=["L"])
+    return np.asarray(result.data) if hasattr(result, 'data') else np.asarray(result)
+
+
+def contract_scalar(tn: qtn.TensorNetwork) -> float:
+    """닫힌 per-class TN을 exact contract → scalar (정규화 안 됨)."""
+    result = tn.contract()
+    return float(result)
+
+
+def contract_marginal_bmps(tn: qtn.TensorNetwork, max_bond: int) -> np.ndarray:
+    """Boundary MPS contraction with SVD truncation (bond dim ≤ max_bond).
+
+    paper Sec III A의 bMPS 방식 — TN을 column별로 흡수하면서 매 단계 MPS 형태로 압축.
+    χ = max_bond 키울수록 exact에 수렴. χ 작을수록 빠르지만 부정확.
+
+    현재 구현은 quimb의 일반 `contract_compressed` 사용 (TensorNetwork2D promote 안 함).
+    더 효율적인 구조화는 TODO.
+    """
+    if max_bond < 1:
+        raise ValueError(f"max_bond must be >= 1, got {max_bond}")
+    result = tn.contract_compressed(
+        'auto-hq',
+        max_bond=max_bond,
+        output_inds=["L"],
+    )
+    return np.asarray(result.data) if hasattr(result, 'data') else np.asarray(result)

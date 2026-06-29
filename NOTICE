@@ -1,0 +1,52 @@
+qec_sim
+Copyright 2026 jlib245
+
+This product includes software developed by third parties, as listed below.
+
+================================================================================
+qec_sim/circuit/noise_model.py
+================================================================================
+
+This file is derived from honeycomb_threshold/src/noise.py.
+
+  Source:    https://github.com/Strilanc/honeycomb_threshold/blob/main/src/noise.py
+  Author:    Craig Gidney (Google Quantum AI)
+  License:   Apache License, Version 2.0
+  Retrieved: 2026-05-11
+
+Apache-2.0 LICENSE text:
+  https://www.apache.org/licenses/LICENSE-2.0
+  A verbatim copy is reproduced at LICENSES/Apache-2.0.txt
+
+Modifications from the upstream file:
+  - Added "CX" and "MR"/"MRX"/"MRY" entries to NoiseModel.SI1000().noisy_gates
+    so that stim's default surface_code:rotated_memory_z circuit (which uses
+    CX rather than CZ, and MR as the combined measure-reset op) is noised
+    consistently with the SI1000 prescription.
+  - Set any_clifford_2 = p explicitly in NoiseModel.SI1000() (upstream omits
+    it because honeycomb circuits only use CZ, which is in noisy_gates).
+  - Removed honeycomb-specific helpers (parity_measurement_with_correlated_*,
+    mix_probability_to_independent_component_probability) and unused noise
+    model variants (PC3, EM3_v1, EM3_v2). The SD6 variant is retained.
+  - Added an `apply()` convenience alias for `noisy_circuit()`.
+
+The upstream Apache-2.0 license notice and copyright are reproduced in the
+header of qec_sim/circuit/noise_model.py.
+
+================================================================================
+data/bb_si1000/*.stim
+================================================================================
+
+Bivariate-bicycle code Stim circuit files (SI1000 noise, CZ-H-MZ gate set,
+r=d rounds, X/Z memory experiments, p in [1e-4, 9e-3]).
+
+  Source:    https://github.com/quantumlib/tesseract-decoder/tree/main/testdata/bivariatebicyclecodes
+  Author:    Google Quantum AI (Tesseract decoder authors)
+  License:   Apache License, Version 2.0
+  Retrieved: 2026-06-29
+  Reference: Beni et al., "Tesseract: A Search-Based Decoder for QEC",
+             arXiv:2503.10988
+
+Files are copied verbatim from the upstream testdata directory with no
+modifications. Filename encodes [[n,k,d]], physical error rate, basis, and
+BB polynomials.
