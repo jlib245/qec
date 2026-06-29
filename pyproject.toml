@@ -20,7 +20,7 @@ dependencies = [
     "beliefmatching>=0.2.0",
     "mlflow>=3.0",
     "torch-geometric>=2.8.0",
-    "tesseract-decoder>=0.1.1",
+    "tesseract-decoder>=0.1.1.dev",
 ]
 
 [project.optional-dependencies]
