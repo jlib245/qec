@@ -231,7 +231,10 @@ datasets/
 Final_Results_/
 results/
 configs/
-data/
+data/*
+!data/bb_si1000/
+data/bb_si1000/*
+!data/bb_si1000/*.stim
 scripts/
 
 .claude/configs/

@@ -32,3 +32,21 @@ Modifications from the upstream file:
 
 The upstream Apache-2.0 license notice and copyright are reproduced in the
 header of qec_sim/circuit/noise_model.py.
+
+================================================================================
+data/bb_si1000/*.stim
+================================================================================
+
+Bivariate-bicycle code Stim circuit files (SI1000 noise, CZ-H-MZ gate set,
+r=d rounds, X/Z memory experiments, p in [1e-4, 9e-3]).
+
+  Source:    https://github.com/quantumlib/tesseract-decoder/tree/main/testdata/bivariatebicyclecodes
+  Author:    Google Quantum AI (Tesseract decoder authors)
+  License:   Apache License, Version 2.0
+  Retrieved: 2026-06-29
+  Reference: Beni et al., "Tesseract: A Search-Based Decoder for QEC",
+             arXiv:2503.10988
+
+Files are copied verbatim from the upstream testdata directory with no
+modifications. Filename encodes [[n,k,d]], physical error rate, basis, and
+BB polynomials.
