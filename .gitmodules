@@ -1,3 +1,4 @@
 [submodule "external/gari-nms"]
 	path = external/gari-nms
 	url = https://github.com/astra-decoders/gari-nms.git
+	ignore = dirty
