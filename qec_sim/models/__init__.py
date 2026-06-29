@@ -5,4 +5,5 @@ from . import baseline  # MLPDecoder
 from . import qct
 from . import hqmt
 from . import gap_routed_cnn
+from . import gap_routed_gnn
 from . import cbam
