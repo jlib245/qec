@@ -10,3 +10,4 @@ from .neural import NeuralDecoder
 from .belief_matching import BeliefMatchingDecoder
 from .belief_matching_fast import BeliefMatchingFastDecoder
 from .bp_osd import BpOsdDecoder
+from .tesseract import TesseractDecoder
