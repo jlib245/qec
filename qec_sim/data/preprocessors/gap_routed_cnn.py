@@ -1,335 +1,8 @@
-# qec_sim/data/preprocessors.py
+# qec_sim/data/preprocessors/gap_routed_cnn.py
 import torch
-from collections import defaultdict
 from typing import Dict, Any, List
 from qec_sim.core.interfaces import BasePreprocessor
 from qec_sim.data.registry import register_preprocessor
-
-
-@register_preprocessor("spatial_grid")
-class SpatialGridPreprocessor(BasePreprocessor):
-    @classmethod
-    def from_config(cls, config, circuit, simulator_pool=None):
-        return cls(
-            detector_coords=circuit.get_detector_coordinates(),
-            num_detectors=circuit.num_detectors,
-        )
-
-    def __init__(self, detector_coords: dict, num_detectors: int, **kwargs):
-        super().__init__()
-        self.num_detectors = num_detectors
-
-        self._required_keys = ["syndromes"]
-
-        all_x = [c[0] for c in detector_coords.values()]
-        all_y = [c[1] for c in detector_coords.values()]
-        all_t = [c[2] for c in detector_coords.values()] if len(list(detector_coords.values())[0]) > 2 else [0]
-
-        min_x, min_y = min(all_x), min(all_y)
-        self.grid_w = int((max(all_x) - min_x) // 2.0) + 1
-        self.grid_h = int((max(all_y) - min_y) // 2.0) + 1
-
-        unique_t = sorted(list(set(all_t)))
-        self.input_depth = len(unique_t)
-        self.out_channels = self.input_depth
-
-        det_indices, c_indices, h_indices, w_indices = [], [], [], []
-        t_map = {t: i for i, t in enumerate(unique_t)}
-        for det_idx in range(num_detectors):
-            if det_idx in detector_coords:
-                coords = detector_coords[det_idx]
-                x, y = coords[0], coords[1]
-                t = coords[2] if len(coords) > 2 else 0
-                det_indices.append(det_idx)
-                c_indices.append(t_map[t])
-                h_indices.append(int((y - min_y) // 2.0))
-                w_indices.append(int((x - min_x) // 2.0))
-
-        # persistent=False: state_dict 제외 + wrapper.to(device) 시 자동 이동.
-        self.register_buffer('det_idx', torch.tensor(det_indices, dtype=torch.long), persistent=False)
-        self.register_buffer('c_idx',   torch.tensor(c_indices,   dtype=torch.long), persistent=False)
-        self.register_buffer('h_idx',   torch.tensor(h_indices,   dtype=torch.long), persistent=False)
-        self.register_buffer('w_idx',   torch.tensor(w_indices,   dtype=torch.long), persistent=False)
-
-    @property
-    def required_data_keys(self) -> List[str]:
-        return self._required_keys
-
-    def get_model_kwargs(self) -> Dict[str, Any]:
-        return {"in_channels": self.out_channels, "grid_h": self.grid_h, "grid_w": self.grid_w}
-
-    def cpu_transform(self, raw_sample: Dict[str, Any]) -> Dict[str, Any]:
-        return raw_sample
-
-    def gpu_transform(self, batch_data: Dict[str, torch.Tensor]) -> torch.Tensor:
-        batch_syn = batch_data["syndromes"]
-        batch_size = batch_syn.size(0)
-        device = batch_syn.device
-
-        grid = torch.full((batch_size, self.out_channels, self.grid_h, self.grid_w), -0.5, device=device)
-        grid[:, self.c_idx, self.h_idx, self.w_idx] = batch_syn[:, self.det_idx]
-
-        return grid
-
-
-@register_preprocessor("soft_grid")
-class SoftGridPreprocessor(BasePreprocessor):
-    """
-    IQ soft measurement 기반 spatial grid 전처리기.
-    soft_measurements (shots, rounds, n_ancilla) → (shots, rounds, H, W) float tensor.
-
-    각 채널은 한 라운드의 soft detection event:
-      - 채널 0: soft_meas[0]  (첫 라운드 posterior, 완벽한 |0⟩ 참조 대비)
-      - 채널 r>0: soft_xor(soft_meas[r], soft_meas[r-1])  (연속 라운드 XOR)
-    """
-
-    @classmethod
-    def from_config(cls, config, circuit, simulator_pool=None):
-        if simulator_pool is None:
-            raise ValueError("SoftGridPreprocessor requires simulator_pool (pauli_plus backend)")
-        sim = simulator_pool.get_random_simulator()
-        return cls(
-            ancilla_coords=sim.get_ancilla_coordinates(),
-            rounds=config.code.rounds,
-        )
-
-    def __init__(self, ancilla_coords: dict, rounds: int, **kwargs):
-        super().__init__()
-        self.rounds = rounds
-        n_ancilla = len(ancilla_coords)
-
-        all_x = [c[0] for c in ancilla_coords.values()]
-        all_y = [c[1] for c in ancilla_coords.values()]
-        min_x, min_y = min(all_x), min(all_y)
-        self.grid_w = int((max(all_x) - min_x) / 2) + 1
-        self.grid_h = int((max(all_y) - min_y) / 2) + 1
-
-        h_indices = [int((ancilla_coords[i][1] - min_y) / 2) for i in range(n_ancilla)]
-        w_indices = [int((ancilla_coords[i][0] - min_x) / 2) for i in range(n_ancilla)]
-
-        self.register_buffer('h_idx', torch.tensor(h_indices, dtype=torch.long), persistent=False)
-        self.register_buffer('w_idx', torch.tensor(w_indices, dtype=torch.long), persistent=False)
-
-    @property
-    def required_data_keys(self) -> List[str]:
-        return ["soft_measurements"]
-
-    def get_model_kwargs(self) -> Dict[str, Any]:
-        return {"in_channels": self.rounds, "grid_h": self.grid_h, "grid_w": self.grid_w}
-
-    def cpu_transform(self, raw_sample: Dict[str, Any]) -> Dict[str, Any]:
-        return raw_sample
-
-    def gpu_transform(self, batch_data: Dict[str, torch.Tensor]) -> torch.Tensor:
-        # soft_meas: (batch, rounds, n_ancilla)
-        soft_meas = batch_data["soft_measurements"]
-        batch_size = soft_meas.size(0)
-        device = soft_meas.device
-
-        # soft detection events: round 0 그대로, round 1+ 는 soft XOR
-        soft_r0 = soft_meas[:, 0:1, :]                                          # (B, 1, A)
-        m_curr = soft_meas[:, 1:, :]
-        m_prev = soft_meas[:, :-1, :]
-        soft_rest = m_curr + m_prev - 2 * m_curr * m_prev                       # (B, R-1, A)
-        soft_det = torch.cat([soft_r0, soft_rest], dim=1)                        # (B, R, A)
-
-        grid = torch.zeros(batch_size, self.rounds, self.grid_h, self.grid_w, device=device)
-        grid[:, :, self.h_idx, self.w_idx] = soft_det
-
-        return grid
-
-
-@register_preprocessor("flat")
-class FlatPreprocessor(BasePreprocessor):
-    """MLP 계열 모델용 flat 전처리기. syndromes을 1D 텐서로 반환합니다."""
-
-    @classmethod
-    def from_config(cls, config, circuit, simulator_pool=None):
-        return cls(num_detectors=circuit.num_detectors)
-
-    def __init__(self, num_detectors: int, **kwargs):
-        super().__init__()
-        self.num_detectors = num_detectors
-        self._required_keys = ["syndromes"]
-
-    @property
-    def required_data_keys(self) -> List[str]:
-        return self._required_keys
-
-    def get_model_kwargs(self) -> Dict[str, Any]:
-        return {"input_dim": self.num_detectors}
-
-    def cpu_transform(self, raw_sample: Dict[str, Any]) -> Dict[str, Any]:
-        return raw_sample
-
-    def gpu_transform(self, batch_data: Dict[str, torch.Tensor]) -> torch.Tensor:
-        return batch_data["syndromes"].float()
-
-
-def _extract_qubit_coords(circuit) -> Dict[int, tuple]:
-    """Stim 회로에서 QUBIT_COORDS instruction을 모아 {qubit_idx: (x, y, ...)} 반환."""
-    out = {}
-    for instr in circuit.flattened():
-        if instr.name != "QUBIT_COORDS":
-            continue
-        coords = tuple(instr.gate_args_copy())
-        for tgt in instr.targets_copy():
-            out[tgt.qubit_value] = coords
-    return out
-
-
-def _classify_rotated_surface_qubits(qubit_coords):
-    """Rotated surface code 좌표 규칙에 따라 data/Z-anc/X-anc 분류.
-       data: (x, y) 모두 odd. Z-anc: (x-y) % 4 == 0. X-anc: (x-y) % 4 == 2.
-    """
-    data, z_anc, x_anc = {}, {}, {}
-    for q, (x, y) in qubit_coords.items():
-        ix, iy = int(x), int(y)
-        if ix % 2 == 1 and iy % 2 == 1:
-            data[q] = (ix, iy)
-        elif (ix - iy) % 4 == 0:
-            z_anc[q] = (ix, iy)
-        elif (ix - iy) % 4 == 2:
-            x_anc[q] = (ix, iy)
-        else:
-            raise RuntimeError(f"unexpected qubit {q} at ({x},{y})")
-    return data, z_anc, x_anc
-
-
-@register_preprocessor("qct_qubit_centric")
-class QCTPreprocessor(BasePreprocessor):
-    """QCT (Qubit-centric Transformer)용 전처리기.
-
-    Stim 회로의 detector_coords + qubit_coords로부터 다음을 계산해 모델에 주입:
-      - n: 데이터 큐빗 수
-      - m_Z, m_X: Z/X-stab ancilla 수
-      - T_Z, T_X: Z/X-stab이 detector를 갖는 round 수
-      - K_Z, K_X: 큐빗당 인접 Z/X-stab 최대 개수 (rotated SC에선 ≤2)
-      - nbr_Z (n, K_Z): 데이터 큐빗 i의 인접 Z-stab ancilla idx (-1 = 패딩)
-      - nbr_X (n, K_X)
-      - det_Z_at (m_Z, T_Z): Z-stab a, round t의 detector idx
-      - det_X_at (m_X, T_X)
-      - mask (n, n): N(i) ∩ N(j) ≠ ∅ → True (unmasked)
-
-    `gpu_transform`은 syndromes (B, num_detectors)를 그대로 float로 반환 — gather와
-    sign 변환은 모델 forward에서 수행 (학습 가능한 W_e와 결합되므로).
-    """
-
-    @classmethod
-    def from_config(cls, config, circuit, simulator_pool=None):
-        return cls(circuit=circuit)
-
-    def __init__(self, circuit, **kwargs):
-        super().__init__()
-        self.num_detectors = circuit.num_detectors
-        self._required_keys = ["syndromes"]
-        self._build_topology(circuit)
-
-    def _build_topology(self, circuit):
-        qc = _extract_qubit_coords(circuit)
-        data_q, z_anc_q, x_anc_q = _classify_rotated_surface_qubits(qc)
-
-        # row-major (y, x) 정렬 — 결정론적 인덱싱
-        data_sorted = sorted(data_q.items(), key=lambda kv: (kv[1][1], kv[1][0]))
-        z_sorted = sorted(z_anc_q.items(), key=lambda kv: (kv[1][1], kv[1][0]))
-        x_sorted = sorted(x_anc_q.items(), key=lambda kv: (kv[1][1], kv[1][0]))
-
-        n = len(data_sorted)
-        m_Z = len(z_sorted)
-        m_X = len(x_sorted)
-
-        z_coord_to_idx = {coord: i for i, (_, coord) in enumerate(z_sorted)}
-        x_coord_to_idx = {coord: i for i, (_, coord) in enumerate(x_sorted)}
-
-        nbr_Z, nbr_X = [[] for _ in range(n)], [[] for _ in range(n)]
-        for di, (_, (x, y)) in enumerate(data_sorted):
-            for dx, dy in [(-1, -1), (-1, +1), (+1, -1), (+1, +1)]:
-                c = (x + dx, y + dy)
-                if c in z_coord_to_idx:
-                    nbr_Z[di].append(z_coord_to_idx[c])
-                elif c in x_coord_to_idx:
-                    nbr_X[di].append(x_coord_to_idx[c])
-
-        K_Z = max(len(v) for v in nbr_Z)
-        K_X = max(len(v) for v in nbr_X)
-        nbr_Z_t = torch.full((n, K_Z), -1, dtype=torch.long)
-        nbr_X_t = torch.full((n, K_X), -1, dtype=torch.long)
-        for i in range(n):
-            if nbr_Z[i]:
-                nbr_Z_t[i, :len(nbr_Z[i])] = torch.tensor(nbr_Z[i], dtype=torch.long)
-            if nbr_X[i]:
-                nbr_X_t[i, :len(nbr_X[i])] = torch.tensor(nbr_X[i], dtype=torch.long)
-
-        det_coords = circuit.get_detector_coordinates()
-        z_det_per_round = defaultdict(dict)
-        x_det_per_round = defaultdict(dict)
-        for det_id, (cx, cy, ct) in det_coords.items():
-            coord = (int(cx), int(cy))
-            if coord in z_coord_to_idx:
-                z_det_per_round[ct][z_coord_to_idx[coord]] = det_id
-            elif coord in x_coord_to_idx:
-                x_det_per_round[ct][x_coord_to_idx[coord]] = det_id
-            else:
-                raise RuntimeError(f"detector {det_id} at ({cx},{cy}) matches no ancilla")
-
-        z_rounds = sorted(z_det_per_round.keys())
-        x_rounds = sorted(x_det_per_round.keys())
-        T_Z = len(z_rounds)
-        T_X = len(x_rounds)
-
-        det_Z_at = torch.zeros((m_Z, T_Z), dtype=torch.long)
-        det_X_at = torch.zeros((m_X, T_X), dtype=torch.long)
-        for ti, t in enumerate(z_rounds):
-            for ai in range(m_Z):
-                det_Z_at[ai, ti] = z_det_per_round[t][ai]
-        for ti, t in enumerate(x_rounds):
-            for ai in range(m_X):
-                det_X_at[ai, ti] = x_det_per_round[t][ai]
-
-        # Structure-aware mask (rotated SC: 코너 4, 엣지 6, 인테리어 9)
-        mask = torch.zeros((n, n), dtype=torch.bool)
-        nbrs_per_qubit = []
-        for i in range(n):
-            s = set()
-            for a in nbr_Z[i]:
-                s.add(("Z", a))
-            for a in nbr_X[i]:
-                s.add(("X", a))
-            nbrs_per_qubit.append(s)
-        for i in range(n):
-            for j in range(n):
-                if nbrs_per_qubit[i] & nbrs_per_qubit[j]:
-                    mask[i, j] = True
-
-        # 버퍼 등록 — wrapper.to(device) 시 자동 이동
-        self.register_buffer("nbr_Z", nbr_Z_t, persistent=False)
-        self.register_buffer("nbr_X", nbr_X_t, persistent=False)
-        self.register_buffer("det_Z_at", det_Z_at, persistent=False)
-        self.register_buffer("det_X_at", det_X_at, persistent=False)
-        self.register_buffer("attn_mask", mask, persistent=False)
-
-        self._meta = dict(n=n, m_Z=m_Z, m_X=m_X, T_Z=T_Z, T_X=T_X, K_Z=K_Z, K_X=K_X)
-
-    @property
-    def required_data_keys(self) -> List[str]:
-        return self._required_keys
-
-    def get_model_kwargs(self) -> Dict[str, Any]:
-        # 토폴로지 메타 + 버퍼 텐서를 모델 __init__에 전달
-        return dict(
-            **self._meta,
-            nbr_Z=self.nbr_Z,
-            nbr_X=self.nbr_X,
-            det_Z_at=self.det_Z_at,
-            det_X_at=self.det_X_at,
-            attn_mask=self.attn_mask,
-        )
-
-    def cpu_transform(self, raw_sample: Dict[str, Any]) -> Dict[str, Any]:
-        return raw_sample
-
-    def gpu_transform(self, batch_data: Dict[str, torch.Tensor]) -> torch.Tensor:
-        return batch_data["syndromes"].float()
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -695,3 +368,149 @@ class Syndrome3DFilteredPreprocessor(GapRoutedCNNPreprocessor):
         flat_idx = self._flat_idx.to(device)
         grid[:, 0, flat_idx] = ch_syn.float()
         return grid.reshape(B, -1)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Cached variants — share the .npz produced by scripts/build_routed_cache.py
+# with the GNN family. CNN's per-detector ch_diff/ch_w0/ch_w1 channels are
+# derived from edge_in_E0/E1 at load time (vectorized scatter onto detector
+# array; ~µs per sample, dominated by I/O not compute).
+# ─────────────────────────────────────────────────────────────────────────
+
+
+@register_preprocessor("cached_gap_routed_cnn")
+class CachedGapRoutedCNNPreprocessor(GapRoutedCNNPreprocessor):
+    """Offline-cached GapRoutedCNN preprocessor.
+
+    Reads `syndromes, edge_in_E0, edge_in_E1, scalars` from shared cache .npz
+    and derives the per-detector ch_diff/ch_w0/ch_w1 channels from edges via
+    static edge endpoints + edge weights. gpu_transform inherits the parent's
+    grid-scatter logic (channels packed onto (T, H, W) volume).
+    """
+
+    def __init__(self, circuit, **kwargs):
+        super().__init__(circuit=circuit, **kwargs)
+        # Build undirected-edge topology mirroring GapRoutedGNNPreprocessor so
+        # cache .npz `edge_in_E0/E1` indices align bit-for-bit.
+        import numpy as np
+        from scipy import sparse
+        from beliefmatching import detector_error_model_to_check_matrices
+
+        dem = circuit.detector_error_model(decompose_errors=True)
+        mtx = detector_error_model_to_check_matrices(dem)
+        priors = np.asarray(mtx.hyperedge_to_edge_matrix @ mtx.priors)
+        w_static = -np.log(np.clip(priors, 1e-14, 1 - 1e-14)).astype(np.float32)
+        EC = sparse.csc_matrix(mtx.edge_check_matrix).tocsc()
+        n_edges_total = EC.shape[1]
+        VIRTUAL = self.num_detectors  # boundary endpoint marker
+
+        endpoints_a, endpoints_b, edge_w_list = [], [], []
+        for e_idx in range(n_edges_total):
+            rows = EC.getcol(e_idx).nonzero()[0]
+            if rows.size == 1:
+                a, b = int(rows[0]), VIRTUAL
+            elif rows.size == 2:
+                a, b = int(rows[0]), int(rows[1])
+                if a > b:
+                    a, b = b, a
+            else:
+                continue
+            endpoints_a.append(a)
+            endpoints_b.append(b)
+            edge_w_list.append(w_static[e_idx])
+
+        self.n_undir_e = len(endpoints_a)
+        self.register_buffer(
+            "_edge_endpoint_a",
+            torch.tensor(endpoints_a, dtype=torch.long),
+            persistent=False,
+        )
+        self.register_buffer(
+            "_edge_endpoint_b",
+            torch.tensor(endpoints_b, dtype=torch.long),
+            persistent=False,
+        )
+        self.register_buffer(
+            "_edge_w_raw",
+            torch.tensor(edge_w_list, dtype=torch.float32),
+            persistent=False,
+        )
+
+    @property
+    def required_data_keys(self) -> List[str]:
+        return ["syndromes", "edge_in_E0", "edge_in_E1", "scalars"]
+
+    def cpu_transform(self, sample: Dict[str, Any]) -> Dict[str, Any]:
+        # Pass-through only. The per-detector channel derivation needs the
+        # static edge-endpoint buffers, which the wrapper moves to GPU when
+        # `.to(device)` is called — so the scatter MUST run in gpu_transform
+        # (DataLoader workers cannot touch CUDA tensors).
+        return {
+            "ch_syn":     sample["syndromes"].float(),
+            "edge_in_E0": sample["edge_in_E0"].float(),
+            "edge_in_E1": sample["edge_in_E1"].float(),
+            "scalars":    sample["scalars"].float(),
+        }
+
+    def gpu_transform(self, batch_data: Dict[str, torch.Tensor]) -> torch.Tensor:
+        # Derive per-detector ch_diff/ch_w0/ch_w1 from edges (batched, on GPU).
+        ch_syn = batch_data["ch_syn"]
+        e0 = batch_data["edge_in_E0"]
+        e1 = batch_data["edge_in_E1"]
+        scalars = batch_data["scalars"]
+        B = ch_syn.size(0)
+        device = ch_syn.device
+        n_det = self.num_detectors
+
+        a = self._edge_endpoint_a.to(device)        # (n_undir_e,)
+        b = self._edge_endpoint_b.to(device)
+        w = self._edge_w_raw.to(device)             # (n_undir_e,)
+
+        ch_w0 = torch.zeros(B, n_det, device=device, dtype=torch.float32)
+        ch_w1 = torch.zeros(B, n_det, device=device, dtype=torch.float32)
+        ch_diff = torch.zeros(B, n_det, device=device, dtype=torch.float32)
+
+        # Mask edges incident to a real detector (vs virtual boundary = n_det)
+        valid_a = a < n_det
+        valid_b = b < n_det
+        a_valid = a[valid_a]
+        b_valid = b[valid_b]
+        a_idx = a_valid.view(1, -1).expand(B, -1)   # (B, n_valid_a)
+        b_idx = b_valid.view(1, -1).expand(B, -1)
+
+        # Edge contributions weighted by w_e for E_0 / E_1
+        contrib_e0 = e0 * w.view(1, -1)             # (B, n_undir_e)
+        contrib_e1 = e1 * w.view(1, -1)
+        ch_w0.scatter_add_(1, a_idx, contrib_e0[:, valid_a])
+        ch_w0.scatter_add_(1, b_idx, contrib_e0[:, valid_b])
+        ch_w1.scatter_add_(1, a_idx, contrib_e1[:, valid_a])
+        ch_w1.scatter_add_(1, b_idx, contrib_e1[:, valid_b])
+
+        # ch_diff: detector incident to any edge in E_0 △ E_1
+        diff = (e0.bool() ^ e1.bool()).float()
+        ch_diff.scatter_reduce_(1, a_idx, diff[:, valid_a], reduce="amax",
+                                 include_self=True)
+        ch_diff.scatter_reduce_(1, b_idx, diff[:, valid_b], reduce="amax",
+                                 include_self=True)
+
+        # Hand off to parent's grid scatter (4 channels onto T×H×W)
+        return super().gpu_transform({
+            "ch_syn":  ch_syn,
+            "ch_diff": ch_diff,
+            "ch_w0":   ch_w0,
+            "ch_w1":   ch_w1,
+            "scalars": scalars,
+        })
+
+
+@register_preprocessor("cached_syndrome_3d")
+class CachedSyndrome3DPreprocessor(Syndrome3DPreprocessor):
+    """Cached syndrome-only 3D CNN ablation — reads only `syndromes` from the
+    shared cache .npz."""
+
+    @property
+    def required_data_keys(self) -> List[str]:
+        return ["syndromes"]
+
+    def cpu_transform(self, sample: Dict[str, Any]) -> Dict[str, Any]:
+        return {"ch_syn": sample["syndromes"].float()}
