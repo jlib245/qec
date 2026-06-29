@@ -1,11 +1,41 @@
 # qec_sim/trainer/trainer.py
+import os
 import torch
 from qec_sim.metrics.evaluator import coerce_label_dtype
+
+
+# Env-driven knobs (default off to avoid breaking previous runs):
+#   QEC_USE_COMPILE=1     → torch.compile core model (1.5–2× via kernel fusion)
+#   QEC_AMP_DTYPE=bf16    → bfloat16 mixed-precision autocast (RTX 4090 native)
+_USE_COMPILE = os.environ.get("QEC_USE_COMPILE", "0") == "1"
+_AMP_DTYPE_STR = os.environ.get("QEC_AMP_DTYPE", "").lower()
+_AMP_DTYPE = {
+    "bf16": torch.bfloat16,
+    "fp16": torch.float16,
+}.get(_AMP_DTYPE_STR, None)
+
+
+def _autocast_ctx(device: torch.device):
+    """Return autocast context if AMP enabled and on CUDA, else null context."""
+    if _AMP_DTYPE is None or device.type != "cuda":
+        import contextlib
+        return contextlib.nullcontext()
+    return torch.autocast(device_type="cuda", dtype=_AMP_DTYPE)
 
 
 class Trainer:
     def __init__(self, wrapped_model, evaluator, train_loader, val_loader,
                  optimizer, scheduler, callbacks, train_steps, val_steps):
+        # Opt-in compile of the heavy compute (core model only — preprocessor's
+        # scatter ops sometimes confuse torch.compile dynamic shape detection).
+        if _USE_COMPILE and hasattr(wrapped_model, "core_model"):
+            wrapped_model.core_model = torch.compile(
+                wrapped_model.core_model, mode="reduce-overhead"
+            )
+            print(f"  [trainer] torch.compile enabled on core_model")
+        if _AMP_DTYPE is not None:
+            print(f"  [trainer] AMP enabled with dtype={_AMP_DTYPE}")
+
         self.model = wrapped_model
         self.evaluator = evaluator
         self.device = evaluator.device
@@ -42,8 +72,9 @@ class Trainer:
             y = coerce_label_dtype(labels.to(self.device))
 
             self.optimizer.zero_grad()
-            outputs = self.model(batch_data)
-            loss = self.evaluator.criterion(outputs, y)
+            with _autocast_ctx(self.device):
+                outputs = self.model(batch_data)
+                loss = self.evaluator.criterion(outputs, y)
             loss.backward()
             self.optimizer.step()
 

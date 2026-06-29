@@ -34,8 +34,16 @@ class Evaluator:
                 batch_data = {k: v.to(self.device).float() for k, v in batch_dict.items()}
                 batch_y = coerce_label_dtype(labels.to(self.device))
 
-                outputs = model(batch_data)
-                loss = self.criterion(outputs, batch_y)
+                # match training-time autocast (env-driven)
+                import os, contextlib
+                _amp = {"bf16": torch.bfloat16, "fp16": torch.float16}.get(
+                    os.environ.get("QEC_AMP_DTYPE", "").lower())
+                ctx = (torch.autocast(device_type="cuda", dtype=_amp)
+                       if _amp is not None and self.device.type == "cuda"
+                       else contextlib.nullcontext())
+                with ctx:
+                    outputs = model(batch_data)
+                    loss = self.criterion(outputs, batch_y)
                 total_loss += loss.item()
 
                 if batch_y.dtype == torch.long:

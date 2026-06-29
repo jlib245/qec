@@ -142,6 +142,10 @@ class OfflineDataStrategy:
             samples_per_epoch=samples_per_epoch,
             seed=tc.seed,
         )
+        # persistent_workers=True: workers stay alive across epochs so we
+        # avoid re-forking from a parent that may carry tens of GB of RSS
+        # (cached datasets sit in RAM). Without this, fork can deadlock.
+        persist = tc.num_workers > 0
         train_loader = DataLoader(
             self._train_dataset,
             batch_size=tc.batch_size,
@@ -150,6 +154,7 @@ class OfflineDataStrategy:
             pin_memory=tc.pin_memory,
             prefetch_factor=pf,
             worker_init_fn=_worker_init_fn if tc.num_workers > 0 else None,
+            persistent_workers=persist,
         )
         val_loader = DataLoader(
             self._val_dataset,
@@ -159,6 +164,7 @@ class OfflineDataStrategy:
             pin_memory=tc.pin_memory,
             prefetch_factor=pf,
             worker_init_fn=_worker_init_fn if tc.num_workers > 0 else None,
+            persistent_workers=persist,
         )
         return train_loader, val_loader
 
