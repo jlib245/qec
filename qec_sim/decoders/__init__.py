@@ -11,3 +11,8 @@ from .belief_matching import BeliefMatchingDecoder
 from .belief_matching_fast import BeliefMatchingFastDecoder
 from .bp_osd import BpOsdDecoder
 from .tesseract import TesseractDecoder
+
+try:
+    from .gari import GariNmsDecoder  # noqa: F401 — requires external/gari-nms submodule + built .so
+except ImportError:
+    pass
