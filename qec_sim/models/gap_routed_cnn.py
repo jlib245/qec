@@ -94,3 +94,20 @@ class Syndrome3DCNN(GapRoutedCNN):
 class Syndrome3DCNNFiltered(Syndrome3DCNN):
     """Syndrome-only 3D CNN with gap-filtered fine-tuning preprocessor."""
     REQUIRED_PREPROCESSOR = "syndrome_3d_filtered"
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Cached pairs — identical architecture, point to cached preprocessor that
+# reads from offline .npz (no per-sample MWPM at training time).
+# ─────────────────────────────────────────────────────────────────────────
+
+@register_model("cached_gap_routed_cnn")
+class CachedGapRoutedCNN(GapRoutedCNN):
+    """Same architecture as GapRoutedCNN; consumes cached preprocessor."""
+    REQUIRED_PREPROCESSOR = "cached_gap_routed_cnn"
+
+
+@register_model("cached_syndrome_3d_cnn")
+class CachedSyndrome3DCNN(Syndrome3DCNN):
+    """Same architecture as Syndrome3DCNN; consumes cached syndrome preprocessor."""
+    REQUIRED_PREPROCESSOR = "cached_syndrome_3d"
