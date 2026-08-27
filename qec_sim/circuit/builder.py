@@ -73,6 +73,32 @@ class SurfaceCodeSI1000Builder(BaseCircuitBuilder):
         return NoiseModel.SI1000(self.p).noisy_circuit(base)
 
 
+@register_builder("stim_file")
+class StimFileBuilder(BaseCircuitBuilder):
+    """디스크의 .stim 회로를 그대로 로드 (노이즈는 파일에 baked-in).
+
+    surface code가 아닌 외부 회로(BB/qLDPC 등) eval용. noise_params는 무시 —
+    회로에 이미 노이즈가 적용돼 있음. code_params.stim_path 필수.
+    glob 패턴이면 정확히 하나만 매치해야 함 (다중 파일 sweep은 eval_pipeline이
+    파일별로 개별 처리; 이 빌더는 build_circuit 단일 회로 계약을 지킴).
+    """
+
+    def build(self) -> stim.Circuit:
+        import glob as _glob
+        path = self.code_params.stim_path
+        if not path:
+            raise ValueError("stim_file 빌더는 code.stim_path 명시 필수.")
+        matches = sorted(_glob.glob(path))
+        if len(matches) == 0:
+            raise FileNotFoundError(f"stim_path에 매치되는 파일 없음: {path}")
+        if len(matches) > 1:
+            raise ValueError(
+                f"stim_path glob이 {len(matches)}개 매치 — 단일 회로 빌더엔 하나만 허용. "
+                f"다중 파일 sweep은 eval_pipeline(engine=sinter)을 사용하세요. 매치: {matches[:3]}..."
+            )
+        return stim.Circuit.from_file(matches[0])
+
+
 def build_si1000_canonical(distance: int, rounds: int, p: float) -> stim.Circuit:
     """Convenience helper: build a canonical-SI1000 rotated_memory_z circuit."""
     from qec_sim.circuit.noise_model import NoiseModel

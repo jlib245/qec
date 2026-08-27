@@ -9,6 +9,7 @@ from . import basic
 from . import qct
 from . import gap_routed_cnn
 from . import gap_routed_gnn
+from . import edge_scatter_cnn
 
 from .basic import (
     SpatialGridPreprocessor,
@@ -33,3 +34,4 @@ from .gap_routed_gnn import (
     CachedSyndromeGNNPreprocessor,
     CachedGapRoutedGNNCNNFeatPreprocessor,
 )
+from .edge_scatter_cnn import CachedEdgeScatterCNNPreprocessor

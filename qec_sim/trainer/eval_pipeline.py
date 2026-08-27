@@ -136,6 +136,125 @@ class EvaluationPipeline:
 
         return mlflow, run
 
+    @staticmethod
+    def _parse_stim_filename(path: str) -> dict:
+        """.stim 파일명에서 메타데이터를 best-effort 파싱 (BB 컨벤션 우선).
+
+        모든 row가 동일 CSV 스키마를 갖도록 키(p/basis/nkd/d/file)는 항상 포함하고,
+        매치 안 되면 None. file은 basename.
+        """
+        import os
+        import re
+        base = os.path.basename(path)
+        def _search(pat, cast):
+            m = re.search(pat, base)
+            return cast(m.group(1)) if m else None
+        return {
+            "p": _search(r'p=([0-9.]+)', float),
+            "basis": _search(r'c=(bivariate_bicycle_[XZ])', str),
+            "nkd": _search(r'nkd=(\[\[[0-9,]+\]\])', str),
+            "d": _search(r'(?:^|,)d=(\d+)', int),
+            "file": base,
+        }
+
+    def _build_stim_file_sources(self):
+        """code.stim_path glob을 나열해 파일당 (None, label, circuit) 소스를 만든다.
+
+        sim은 None — sinter가 회로에서 직접 샘플링하므로 in-process 시뮬레이터 불필요.
+        """
+        import glob
+        import stim
+        path = self.config.code.stim_path
+        if not path:
+            raise ValueError("code.name='stim_file'은 code.stim_path 명시 필수.")
+        matches = sorted(glob.glob(path))
+        if not matches:
+            raise FileNotFoundError(f"code.stim_path에 매치되는 파일 없음: {path}")
+        print(f"  stim_file source: {len(matches)}개 파일 매치")
+        sources = []
+        for fp in matches:
+            circuit = stim.Circuit.from_file(fp)
+            label = self._parse_stim_filename(fp)
+            sources.append((None, label, circuit))
+        return sources
+
+    def _collect_sinter(self, simulators_with_labels, decoder_name,
+                        results, mlflow_mod):
+        """sinter.collect로 algo decoder를 multiprocess 벤치. results/mlflow 채움."""
+        import sinter
+
+        ALGO = {"mwpm", "belief_matching", "belief_matching_fast", "bp_osd", "bp_lsd"}
+        if decoder_name not in ALGO:
+            raise ValueError(
+                f"engine='sinter'는 algo decoder만 지원합니다 (받은: {decoder_name}). "
+                f"지원: {sorted(ALGO)}. neural은 engine='inprocess'를 사용하세요."
+            )
+
+        mk = dict(self.config.decoder.model_kwargs)
+        custom = {}
+        builtin = []
+        if decoder_name == "mwpm":
+            task_dec = "pymatching"          # sinter 내장 (graphlike DEM 전용)
+            builtin = ["pymatching"]
+        elif decoder_name == "bp_osd":
+            from qec_sim.decoders.sinter_bp_osd import BpOsdSinterDecoder
+            task_dec = "bp_osd"
+            custom["bp_osd"] = BpOsdSinterDecoder(**mk)
+        elif decoder_name == "bp_lsd":
+            # ldpc 내장 SinterLsdDecoder는 lsd_method 미노출 → 항상 LSD_0(order 0).
+            # order>0(LSD_CS/LSD_E)을 쓰려면 자체 adapter 필요.
+            from qec_sim.decoders.sinter_bp_lsd import BpLsdSinterDecoder
+            task_dec = "bp_lsd"
+            custom["bp_lsd"] = BpLsdSinterDecoder(**mk)
+        elif decoder_name == "belief_matching_fast":
+            from qec_sim.decoders.sinter_belief_matching_fast import BeliefMatchingFastSinterDecoder
+            task_dec = "belief_matching_fast"
+            custom["belief_matching_fast"] = BeliefMatchingFastSinterDecoder(**mk)
+        elif decoder_name == "belief_matching":
+            from beliefmatching import BeliefMatchingSinterDecoder
+            task_dec = "belief_matching"
+            custom["belief_matching"] = BeliefMatchingSinterDecoder(**mk)
+
+        tasks = [
+            sinter.Task(circuit=circuit, decoder=task_dec, json_metadata=label)
+            for (_sim, label, circuit) in simulators_with_labels
+        ]
+
+        collect_kwargs = dict(
+            num_workers=self.config.simulation.workers,
+            tasks=tasks,
+            custom_decoders=custom,
+            max_shots=self.config.simulation.max_shots,
+            max_errors=self.config.simulation.max_errors,
+            print_progress=True,
+        )
+        if builtin:
+            collect_kwargs["decoders"] = builtin
+
+        print(f"  sinter collect: {len(tasks)} tasks × {task_dec}  "
+              f"(workers={self.config.simulation.workers}, "
+              f"max_shots={self.config.simulation.max_shots}, "
+              f"max_errors={self.config.simulation.max_errors})", flush=True)
+
+        # sinter 자체 진행표(print_progress, stderr)가 라이브 뷰를 제공. 우리 per-task
+        # LER은 collect 종료 후 배치로 정리 출력 (progress_callback의 new_stats는 델타
+        # 배치라 per-task 누적이 아니어서 스트리밍엔 부적합).
+        stats = sinter.collect(**collect_kwargs)
+
+        for idx, s in enumerate(stats):
+            md = dict(s.json_metadata or {})
+            ler = s.errors / s.shots if s.shots else float("nan")
+            row = {**md, "shots": s.shots, "errors": s.errors,
+                   "decoder": decoder_name, "ler": ler, "wall_seconds": s.seconds}
+            results.append(row)
+            label_str = ", ".join(f"{k}={v}" for k, v in md.items() if k != "file")
+            print(f"{label_str} | LER: {ler:.4%} ({s.errors}/{s.shots})", flush=True)
+            if mlflow_mod is not None:
+                mlflow_mod.log_metric("ler", ler, step=idx)
+                p = md.get("p")
+                if isinstance(p, (int, float)) and not isinstance(p, bool):
+                    mlflow_mod.log_metric("p", float(p), step=idx)
+
     def _run(self, shots: int, timestamp: str):
         decoder_name = self.config.decoder.name
         print(f"평가 시작 (Device: {self.device}, shots/noise: {shots:,})")
@@ -152,16 +271,26 @@ class EvaluationPipeline:
         mlflow_mod, mlflow_run = self._open_mlflow_run(shots, model_dir)
 
         if backend == 'stim':
-            noise_configs = self.config.get_expanded_noise_configs()
-            simulators_with_labels = []
-            for noise_cfg in noise_configs:
-                circuit = build_circuit(
-                    self.config.code.name, self.config.code, noise_cfg
-                ).build()
-                sim = CircuitNoiseSimulator(circuit, noise_cfg)
-                label = {"p_gate": noise_cfg.p_gate, "p_meas": noise_cfg.p_meas,
-                         "p_corr": noise_cfg.p_corr}
-                simulators_with_labels.append((sim, label, circuit))
+            if self.config.code.name == 'stim_file':
+                # 외부 .stim 회로 (BB/qLDPC 등). 노이즈 baked-in → noise sweep 없이
+                # glob 매치 파일당 하나의 source. sinter 엔진 전용 (in-process 샘플러 없음).
+                if self.config.simulation.engine != 'sinter':
+                    raise ValueError(
+                        "code.name='stim_file'은 simulation.engine='sinter' 전용입니다 "
+                        "(파일 회로엔 in-process 샘플러 경로가 없음)."
+                    )
+                simulators_with_labels = self._build_stim_file_sources()
+            else:
+                noise_configs = self.config.get_expanded_noise_configs()
+                simulators_with_labels = []
+                for noise_cfg in noise_configs:
+                    circuit = build_circuit(
+                        self.config.code.name, self.config.code, noise_cfg
+                    ).build()
+                    sim = CircuitNoiseSimulator(circuit, noise_cfg)
+                    label = {"p_gate": noise_cfg.p_gate, "p_meas": noise_cfg.p_meas,
+                             "p_corr": noise_cfg.p_corr}
+                    simulators_with_labels.append((sim, label, circuit))
         else:
             # pauli_plus: list-valued 필드를 Cartesian product로 확장
             from qec_sim.circuit.pauli_plus import PauliPlusSimulator
@@ -199,6 +328,13 @@ class EvaluationPipeline:
         print(f"{'LER':>12}")
         print("-" * 45)
 
+        # sinter 엔진: multiprocess + adaptive stopping으로 한 번에 collect.
+        # results/mlflow를 채운 뒤 in-process 루프는 건너뜀 (리스트를 비워 no-op).
+        if self.config.simulation.engine == 'sinter':
+            self._collect_sinter(simulators_with_labels, decoder_name,
+                                 results, mlflow_mod)
+            simulators_with_labels = []
+
         for idx, (sim, label, circuit) in enumerate(simulators_with_labels):
             raw = sim.generate_data(shots=shots)
             syndromes, observables = raw['syndromes'], raw['observables']
@@ -230,7 +366,7 @@ class EvaluationPipeline:
                 if circuit is None:
                     raise ValueError("bp_osd decoder는 stim backend에서만 지원됩니다.")
                 dem = circuit.detector_error_model(decompose_errors=False)
-                bp_osd = BpOsdDecoder(error_model=dem)
+                bp_osd = BpOsdDecoder(error_model=dem, **self.config.decoder.model_kwargs)
                 preds = bp_osd.decode_batch(syndromes)
             else:
                 raise ValueError(f"지원하지 않는 decoder: {decoder_name}")

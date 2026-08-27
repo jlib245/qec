@@ -11,6 +11,9 @@ class CodeParams:
     name: str
     distance: int
     rounds: int
+    # name=="stim_file"일 때만 사용. 디스크의 .stim 회로를 로드 (노이즈 baked-in).
+    # glob 패턴 허용 — 여러 파일 매치 시 파일당 하나의 eval task 로 확장됨.
+    stim_path: Optional[str] = None
 
 
 @dataclass
@@ -180,10 +183,20 @@ class SimulationConfig:
     pauli_plus: backend='pauli_plus'일 때 노이즈 dict.
                 list-valued 필드 cartesian 확장을 위해 raw dict 유지.
                 키는 PauliPlusNoiseParams 필드와 일치해야 함 (from_yaml에서 검증).
+    engine:  eval 실행 엔진. 'inprocess'(기본, per-shot 파이썬 루프) 또는
+             'sinter'(multiprocess + adaptive stopping). 'sinter'는 stim backend
+             + algo decoder(mwpm/belief_matching/belief_matching_fast/bp_osd)에서만
+             지원 — neural/pauli_plus는 inprocess 전용.
+    max_shots/max_errors: engine='sinter'일 때 필수. sinter adaptive stopping 기준.
+    workers: sinter worker 프로세스 수.
     """
     backend: str
     shots: Optional[int] = None
     pauli_plus: Optional[Dict[str, Any]] = None
+    engine: str = "inprocess"
+    max_shots: Optional[int] = None
+    max_errors: Optional[int] = None
+    workers: int = 8
 
 
 @dataclass
@@ -230,7 +243,34 @@ class ExperimentConfig:
             backend=sim_raw['backend'],
             shots=sim_raw.get('shots'),
             pauli_plus=sim_raw.get('pauli_plus'),
+            engine=sim_raw.get('engine', 'inprocess'),
+            max_shots=sim_raw.get('max_shots'),
+            max_errors=sim_raw.get('max_errors'),
+            workers=sim_raw.get('workers', 8),
         )
+        if sim.engine not in ('inprocess', 'sinter'):
+            raise ValueError(
+                f"simulation.engine은 'inprocess' 또는 'sinter'여야 합니다. 받은 값: {sim.engine!r}"
+            )
+        if sim.engine == 'sinter':
+            if sim.backend != 'stim':
+                raise ValueError(
+                    "simulation.engine='sinter'는 backend='stim'에서만 지원됩니다 "
+                    f"(받은 backend={sim.backend!r})."
+                )
+            if sim.max_shots is None or sim.max_errors is None:
+                raise ValueError(
+                    "simulation.engine='sinter'는 max_shots와 max_errors 명시 필수 "
+                    "(sinter adaptive stopping 기준)."
+                )
+        if sim.backend == 'pauli_plus':
+            import warnings
+            warnings.warn(
+                "backend='pauli_plus'는 deprecated입니다 (2026-07-13~). stim backend로 "
+                "이전을 권장하며, Pauli+ 경로는 더 이상 확장/유지되지 않습니다.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         if sim.pauli_plus is not None:
             valid = {f.name for f in dc.fields(PauliPlusNoiseParams)}
             unknown = set(sim.pauli_plus) - valid

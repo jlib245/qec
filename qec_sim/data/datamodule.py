@@ -48,17 +48,81 @@ def _worker_init_fn(worker_id: int):
     random.seed(seed)
 
 
+class _BitPackedTensor:
+    """Stores a binary (N, F) tensor as packed uint8 with shape (N, ceil(F/8)).
+
+    `__getitem__(idx)` (scalar or batch index) unpacks the requested row(s) on
+    the fly and returns a torch.uint8 tensor of shape (..., F). Cache-friendly
+    because the packed RAM footprint is 1/8 of the unpacked form.
+    """
+
+    def __init__(self, packed: np.ndarray, n_unpacked: int):
+        # packed: shape (N, ceil(n_unpacked/8)), dtype uint8
+        self.packed = np.ascontiguousarray(packed)
+        self.n_unpacked = int(n_unpacked)
+
+    def __len__(self):
+        return self.packed.shape[0]
+
+    @property
+    def shape(self):
+        return (self.packed.shape[0], self.n_unpacked)
+
+    def __getitem__(self, idx):
+        rows = self.packed[idx]                       # (..., ceil(F/8))
+        bits = np.unpackbits(rows, axis=-1, count=self.n_unpacked)
+        return torch.from_numpy(bits)
+
+
+# Keys that are stored bit-packed when `_meta_bitpacked` is True.
+# Each maps to the meta key holding the original (pre-pack) length.
+_BITPACK_KEYS = {
+    "syndromes":  "_meta_n_det",
+    "edge_in_E0": "_meta_edge_E",
+    "edge_in_E1": "_meta_edge_E",
+}
+
+
+def _maybe_unpack_full(arr_packed, n_unpacked, bitpacked):
+    """Eagerly unpack a packed (N, ceil(F/8)) uint8 array to (N, F).
+
+    Used for code paths (e.g. coset label computation) that need the full
+    unpacked syndrome matrix up front rather than per-row.
+    """
+    if not bitpacked:
+        return arr_packed
+    return np.unpackbits(np.asarray(arr_packed), axis=-1, count=int(n_unpacked))
+
+
 class QECRawDataset(Dataset):
     """전처리기가 명시한 데이터만 하드디스크에서 꺼내어 cpu_transform을 거쳐 반환합니다.
 
     coset_lut 가 주어지면 observables → coset label (class index) 로 변환.
     online path 의 OnlineQECDataset._yield_chunk_batches 와 대칭이라 동일 .npz 가
     coset / non-coset 양쪽에서 그대로 재사용 가능.
+
+    Bit-packed cache 지원: .npz 의 `_meta_bitpacked` 가 True 이면 syndromes /
+    edge_in_E0 / edge_in_E1 는 packed uint8 로 저장돼 있다. 그 키는 RAM 에 packed
+    그대로 유지하고 `__getitem__` 에서 row 단위로 unpack 한다 (전체 unpack 은
+    d=7 merged cache 의 경우 200GB+ 라 RAM 폭발).
     """
 
     def __init__(self, npz_path: str, required_keys: List[str],
                  cpu_transform: Optional[Callable] = None, coset_lut=None):
         data = np.load(npz_path)
+
+        bitpacked = bool(data["_meta_bitpacked"].item()) \
+            if "_meta_bitpacked" in data.files else False
+        # Per-key unpacked lengths (only meaningful when bitpacked).
+        unpacked_len = {}
+        if bitpacked:
+            for key, meta_key in _BITPACK_KEYS.items():
+                if meta_key not in data.files:
+                    raise ValueError(
+                        f"bitpacked cache 인데 {meta_key} 가 없음 — "
+                        f"build_routed_cache.py 가 메타를 안 적었음. file={npz_path}"
+                    )
+                unpacked_len[key] = int(data[meta_key].item())
 
         self.data_dict = {}
         for key in required_keys:
@@ -67,7 +131,13 @@ class QECRawDataset(Dataset):
                     f"전처리기가 '{key}'를 요구했으나 데이터셋에 없습니다. "
                     f"파일 내 키: {list(data.keys())}"
                 )
-            self.data_dict[key] = torch.tensor(data[key])
+            if bitpacked and key in _BITPACK_KEYS:
+                self.data_dict[key] = _BitPackedTensor(
+                    packed=np.asarray(data[key]),
+                    n_unpacked=unpacked_len[key],
+                )
+            else:
+                self.data_dict[key] = torch.tensor(data[key])
 
         # 'observables' 또는 'logical_outcomes' 키 모두 지원
         if 'observables' in data:
@@ -83,7 +153,14 @@ class QECRawDataset(Dataset):
                     "coset_mode 사용 시 .npz 에 'syndromes' 키 필수 (coset label 계산용)."
                 )
             from qec_sim.decoders.lut import compute_coset_labels
-            self.labels = torch.from_numpy(compute_coset_labels(data['syndromes'], obs, coset_lut))
+            # coset label 계산은 syndromes 전체를 한 번에 봐야 하므로 unpack.
+            # (이 path 는 작은 cache 에서만 쓰는 게 안전 — full unpack 메모리 필요.)
+            syn = _maybe_unpack_full(
+                data['syndromes'],
+                unpacked_len.get('syndromes'),
+                bitpacked,
+            )
+            self.labels = torch.from_numpy(compute_coset_labels(syn, obs, coset_lut))
         else:
             self.labels = torch.tensor(obs)
 
